@@ -56,11 +56,13 @@ use crate::paint::{GlyphMask, GlyphQuad, TextureRef};
 
 pub mod ab_glyph_source;
 pub mod atlas;
+pub mod fontset;
 pub mod sdf;
 pub mod shape;
 pub mod stack;
 
 pub use ab_glyph_source::{from_font_file, from_system_font, AbGlyphSource, FONT_OVERRIDE_ENV};
+pub use fontset::{FontMeta, FontSet};
 pub use sdf::{sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD, SDF_TIERS};
 pub use shape::{bidi_runs, line_break_opportunities, ShapedGlyph, ShapedRun};
 
@@ -98,8 +100,28 @@ pub trait GlyphSource {
     /// 画不画，会导致同一段文本在有无字体的机器上排版不同。
     fn glyph_id(&mut self, ch: char) -> u32;
 
+    /// 字符 → `(它所属的字体 id, 字形 id)`。
+    ///
+    /// 多字体来源（回退链）覆盖它，按覆盖范围与 `style` 的 family/weight 选字体。
+    /// 单字体来源用默认实现即可 —— 这与 [`Self::glyph_id`] 完全等价。
+    fn glyph_in(&mut self, ch: char, _style: &TextStyle) -> (u32, u32) {
+        (self.font_id(), self.glyph_id(ch))
+    }
+
     /// 单个字形的步进宽度（DIP）。
     fn advance(&mut self, glyph_id: u32, px_size: f32) -> f32;
+
+    /// 指定字体下的步进宽度。默认忽略 `font_id`，供单字体来源使用。
+    fn advance_in(&mut self, font_id: u32, glyph_id: u32, px_size: f32) -> f32 {
+        let _ = font_id;
+        self.advance(glyph_id, px_size)
+    }
+
+    /// 指定字体下的栅格化。默认忽略 `font_id`，供单字体来源使用。
+    fn rasterize_in(&mut self, font_id: u32, glyph_id: u32, px_size: u32) -> Option<AtlasRaster> {
+        let _ = font_id;
+        self.rasterize(glyph_id, px_size)
+    }
 
     /// 栅格化一个字形为 8 位**有符号距离场**（SDF）。
     ///
@@ -267,6 +289,8 @@ pub struct PlacedGlyph {
     pub advance: f32,
     /// 是否来自彩色字体（emoji）——决定绘制时是否忽略主题文本色。
     pub color_glyph: bool,
+    /// 伪粗体阈值偏移（SDF 值域），由回退字体在字重不匹配时合成。
+    pub embolden: f32,
 }
 
 /// 截断：把超宽文本裁到 `max_width` 并加省略号。
@@ -399,6 +423,7 @@ impl TextEngine for NullEngine {
                         offset: Point::new(x, 0.0),
                         advance: cw,
                         color_glyph: false,
+                        embolden: 0.0,
                     };
                     x += cw;
                     g

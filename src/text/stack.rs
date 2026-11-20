@@ -161,8 +161,10 @@ impl<S: GlyphSource> TextStack<S> {
                 let width: f32 = slice
                     .chars()
                     .map(|ch| {
-                        let id = self.source.glyph_id(ch);
-                        self.source.advance(id, px_size) + style.letter_spacing
+                        // 多字体回退时宽度必须按"最终会用的那份字体"算，否则换行
+                        // 决策与实际排出的字形步进不一致。
+                        let (font_id, id) = self.source.glyph_in(ch, style);
+                        self.source.advance_in(font_id, id, px_size) + style.letter_spacing
                     })
                     .sum();
                 cluster_widths.push(width);
@@ -237,6 +239,7 @@ impl<S: GlyphSource> TextStack<S> {
                             offset: Point::new(pen + g.offset.x, g.offset.y),
                             advance: g.advance + spacing,
                             color_glyph: g.color_glyph,
+                            embolden: g.embolden,
                         });
                         pen += g.advance;
                     }
@@ -431,7 +434,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                 }
                 let r = self
                     .source
-                    .rasterize(g.glyph_id, px)
+                    .rasterize_in(g.font_id, g.glyph_id, px)
                     .unwrap_or(AtlasRaster {
                         offset: Point::new(0.0, 0.0),
                         width: 0,

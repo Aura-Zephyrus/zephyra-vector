@@ -29,6 +29,9 @@ pub struct ShapedGlyph {
     pub offset: Point,
     /// 彩色字形（emoji）标记。光栅化尚未支持彩色表，仅作信息保留。
     pub color_glyph: bool,
+    /// 伪粗体阈值偏移（SDF 值域）。多字体回退在请求字重无匹配字体时用它合成，
+    /// 0 表示不合成。
+    pub embolden: f32,
 }
 
 /// 一个整形后的 run：同一方向、同一 script、视觉顺序连续。
@@ -133,6 +136,7 @@ pub fn naive_shape<S: GlyphSource + ?Sized>(
             advance: source.advance(id, px),
             offset: Point::ZERO,
             color_glyph: false,
+            embolden: 0.0,
         });
     }
     if glyphs.is_empty() {

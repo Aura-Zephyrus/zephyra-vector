@@ -83,6 +83,16 @@ impl AbGlyphSource {
         Ok(Self { font, font_id })
     }
 
+    /// 原始字体字节（供回退链查询 cmap 覆盖、重建 rustybuzz face）。
+    pub(crate) fn font_bytes(&self) -> &[u8] {
+        self.font.as_slice()
+    }
+
+    /// 字体的 units-per-em（供回退链算 `px / upem` 缩放）。
+    pub(crate) fn units_per_em(&self) -> f32 {
+        self.font.units_per_em().unwrap_or(1000.0).max(1.0)
+    }
+
     /// **em 像素 → ab_glyph 的 `PxScale`**。全部字号换算的唯一入口。
     ///
     /// # 为什么必须有这一刀
@@ -126,7 +136,16 @@ impl AbGlyphSource {
     }
 
     /// 对单个 BiDi run 做 rustybuzz 整形。
-    fn shape_run(&self, run_text: &str, rtl: bool, px_size: f32, scale: f32) -> ShapedRun {
+    ///
+    /// `pub(crate)` 供 `FontSet` 逐字体分段复用 —— 回退链仍需同样的 GSUB/GPOS，
+    /// 只是按覆盖范围把一段文本切成若干段，各段用自己的字体整形。
+    pub(crate) fn shape_run(
+        &self,
+        run_text: &str,
+        rtl: bool,
+        px_size: f32,
+        scale: f32,
+    ) -> ShapedRun {
         let script = dominant_script(run_text);
         let face = match rustybuzz::Face::from_slice(self.font.as_slice(), 0) {
             Some(f) => f,
@@ -144,6 +163,7 @@ impl AbGlyphSource {
                         advance: self.font.as_scaled(self.px_scale(px_size)).h_advance(id),
                         offset: Point::ZERO,
                         color_glyph: false,
+                        embolden: 0.0,
                     });
                 }
                 return ShapedRun {
@@ -216,6 +236,7 @@ impl AbGlyphSource {
                 // HarfBuzz 的 y 向上为正；核心坐标系 y 向下，所以取负。
                 offset: Point::new(pos.x_offset as f32 * scale, -(pos.y_offset as f32) * scale),
                 color_glyph: false,
+                embolden: 0.0,
             });
         }
         ShapedRun {
