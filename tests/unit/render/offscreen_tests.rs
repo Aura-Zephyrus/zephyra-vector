@@ -759,6 +759,7 @@ fn text_offscreen_bounds_is_union_of_all_glyphs() {
         uv: crate::core::UvRect::FULL,
         color_glyph: false,
         mask: crate::paint::GlyphMask::Coverage,
+        kind: crate::render::quad::kind::GLYPH,
     };
     let cmd = Command::Text {
         atlas: crate::paint::TextureRef::new("a"),

@@ -44,10 +44,12 @@
 //!
 //! # 已知限制
 //!
-//! - **字体回退与 `TextStyle::weight` / `family` 尚未生效**：当前只持有一份字体，
-//!   缺字统一替换为 U+FFFD；多字体回退与可变字体轴不在本层范围内。
+//! - **可变字体轴尚未生效**：字体回退链（`FontSet`）已能按覆盖范围与 family/weight
+//!   在多份字体间选字，字重无匹配时用伪粗体合成；但可变字体的连续轴不在此范围内。
 //! - **彩色字形未光栅化**：emoji 的 ZWJ 序列在整形层能合成 cluster，但
 //!   `AbGlyphSource` 只栅格化 `glyf` 轮廓，COLR/CBDT 尚未接入。
+//! - **LCD 子像素混合是近似**：当前管线用标量 alpha 混合，shader 保留 RGB 子像素
+//!   差异、alpha 取均值；`TextStyle::lcd` 默认关闭。
 //! - `GlyphSource::advance` 仍是单字符接口（用于光标定位等场景）；完整排版请走
 //!   [`GlyphSource::shape`] 与 [`crate::text::TextEngine::shape`]。
 
@@ -62,8 +64,8 @@ pub mod sdf;
 pub mod shape;
 pub mod stack;
 
-pub use ab_glyph_source::{from_font_file, from_system_font, AbGlyphSource, FONT_OVERRIDE_ENV};
 pub use crate::paint::LcdOrder;
+pub use ab_glyph_source::{from_font_file, from_system_font, AbGlyphSource, FONT_OVERRIDE_ENV};
 pub use fontset::{FontMeta, FontSet};
 pub use sdf::{sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD, SDF_TIERS};
 pub use shape::{bidi_runs, line_break_opportunities, ShapedGlyph, ShapedRun};
@@ -171,6 +173,23 @@ pub enum TextAlign {
     Left,
     Center,
     Right,
+    /// 两端对齐：在断行点（空白）处分配额外间距，末行左对齐。
+    Justify,
+}
+
+/// 文字装饰线（可叠加）。对应 Skia 的 `SkDecorationStyle` 的 TextDecoration 位标志，
+/// 这里用三个布尔避免引入 bitflags 依赖。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TextDecoration {
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub overline: bool,
+}
+
+impl TextDecoration {
+    pub fn any(self) -> bool {
+        self.underline || self.strikethrough || self.overline
+    }
 }
 
 /// 段落基准方向。`Auto` 由 Unicode BiDi 算法根据首个强方向字符推断。
@@ -207,6 +226,14 @@ pub struct TextStyle {
     pub scale: f32,
     /// 段落基准方向；默认由 BiDi 自动推断。
     pub direction: TextDirection,
+    /// 装饰线；位置相对基线，宽度取该行字形的实际跨度。
+    pub decoration: TextDecoration,
+    /// 装饰线粗细（DIP）；`None` 取显示字号的 6%。
+    pub decoration_thickness: Option<f32>,
+    /// 下划线在基线**下方**的偏移（DIP）；`None` 取显示字号的 12%。
+    pub decoration_offset: Option<f32>,
+    /// 伪粗体阈值覆盖（SDF 值域）；`None` 用回退链按字重算出的值。
+    pub embolden: Option<f32>,
     /// LCD 子像素排列；`None` 用普通灰度 MSDF。
     ///
     /// # 为什么默认关闭
@@ -229,6 +256,10 @@ impl Default for TextStyle {
             paragraph_spacing: 0.0,
             scale: 1.0,
             direction: TextDirection::Auto,
+            decoration: TextDecoration::default(),
+            decoration_thickness: None,
+            decoration_offset: None,
+            embolden: None,
             lcd: None,
         }
     }
@@ -574,6 +605,7 @@ pub fn quads_from_shaped(
                 color_glyph: g.color_glyph,
                 // 替身没有图集，走旧的覆盖率路径（uv 指向 (0,0) 那个像素）。
                 mask: GlyphMask::Coverage,
+                kind: crate::render::quad::kind::GLYPH,
             });
         }
     }

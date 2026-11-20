@@ -523,8 +523,14 @@ impl GlyphSource for AbGlyphSource {
         let scale = px_size / upem;
         let mut out = Vec::new();
         for (range, rtl) in bidi_runs(text, style.direction) {
-            let run_text = &text[range];
-            let shaped = self.shape_run(run_text, rtl, px_size, scale);
+            let run_text = &text[range.clone()];
+            let mut shaped = self.shape_run(run_text, rtl, px_size, scale);
+            // `shape_run` 的 cluster 是 run 内字节偏移；下游按整段文本解释它们
+            // （字间距去重、装饰线跨度都以整行字节为基准）。
+            for g in &mut shaped.glyphs {
+                g.cluster.start += range.start;
+                g.cluster.end += range.start;
+            }
             if !shaped.glyphs.is_empty() {
                 out.push(shaped);
             }

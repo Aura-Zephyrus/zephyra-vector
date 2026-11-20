@@ -74,9 +74,7 @@ impl Default for FontSet {
 
 impl FontSet {
     pub fn new() -> Self {
-        Self {
-            fonts: Vec::new(),
-        }
+        Self { fonts: Vec::new() }
     }
 
     /// 加入一份字体。`font_id` 必须唯一 —— 它进图集键，重复会让同一字形存两份。
@@ -184,7 +182,9 @@ impl FontSet {
         let scale = px_size / upem;
         let embolden = self.embolden_for(fidx, style);
         let slot = &mut self.fonts[fidx];
-        let mut shaped = slot.source.shape_run(&text[start..end], rtl, px_size, scale);
+        let mut shaped = slot
+            .source
+            .shape_run(&text[start..end], rtl, px_size, scale);
         for g in &mut shaped.glyphs {
             // `shape_run` 的 cluster 是段内字节偏移；回退链的分析基于整段文本。
             g.cluster.start += start;
@@ -227,10 +227,7 @@ impl GlyphSource for FontSet {
     }
 
     fn rasterize(&mut self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster> {
-        self.fonts
-            .first_mut()?
-            .source
-            .rasterize(glyph_id, px_size)
+        self.fonts.first_mut()?.source.rasterize(glyph_id, px_size)
     }
 
     fn rasterize_in(&mut self, font_id: u32, glyph_id: u32, px_size: u32) -> Option<AtlasRaster> {
@@ -269,7 +266,14 @@ impl GlyphSource for FontSet {
                     seg_end = ce;
                 } else {
                     self.push_segment(
-                        text, &mut glyphs, seg_start, seg_end, seg_font, rtl, px_size, style,
+                        text,
+                        &mut glyphs,
+                        seg_start,
+                        seg_end,
+                        seg_font,
+                        rtl,
+                        px_size,
+                        style,
                     );
                     seg_start = cs;
                     seg_end = ce;
@@ -277,21 +281,29 @@ impl GlyphSource for FontSet {
                 }
             }
             self.push_segment(
-                text, &mut glyphs, seg_start, seg_end, seg_font, rtl, px_size, style,
+                text,
+                &mut glyphs,
+                seg_start,
+                seg_end,
+                seg_font,
+                rtl,
+                px_size,
+                style,
             );
 
             if !glyphs.is_empty() {
-                out.push(ShapedRun { glyphs, rtl, script });
+                out.push(ShapedRun {
+                    glyphs,
+                    rtl,
+                    script,
+                });
             }
         }
         out
     }
 
     fn font_id(&self) -> u32 {
-        self.fonts
-            .first()
-            .map(|s| s.source.font_id())
-            .unwrap_or(0)
+        self.fonts.first().map(|s| s.source.font_id()).unwrap_or(0)
     }
 }
 
@@ -320,7 +332,8 @@ mod tests {
         let cjk = font(r"C:\Windows\Fonts\msyh.ttc");
         let mut set = FontSet::new();
         set.add(10, &latin, FontMeta::new("Segoe UI", 400)).unwrap();
-        set.add(11, &cjk, FontMeta::new("Microsoft YaHei", 400)).unwrap();
+        set.add(11, &cjk, FontMeta::new("Microsoft YaHei", 400))
+            .unwrap();
 
         let (_fid, g) = set.glyph_in('中', &TextStyle::default());
         assert_ne!(g, 0, "中字应落到第二份字体上");
@@ -337,7 +350,8 @@ mod tests {
         let cjk = font(r"C:\Windows\Fonts\msyh.ttc");
         let mut set = FontSet::new();
         set.add(10, &latin, FontMeta::new("Segoe UI", 400)).unwrap();
-        set.add(11, &cjk, FontMeta::new("Microsoft YaHei", 400)).unwrap();
+        set.add(11, &cjk, FontMeta::new("Microsoft YaHei", 400))
+            .unwrap();
         let mut stack = TextStack::new(set);
         let shaped = stack.shape("AB中文CD", &TextStyle::default(), None);
         let ids: std::collections::HashSet<u32> = shaped
@@ -360,7 +374,8 @@ mod tests {
             return;
         }
         let mut set = FontSet::new();
-        set.add(20, &regular, FontMeta::new("Segoe UI", 400)).unwrap();
+        set.add(20, &regular, FontMeta::new("Segoe UI", 400))
+            .unwrap();
         set.add(21, &bold, FontMeta::new("Segoe UI", 700)).unwrap();
         let style = TextStyle {
             weight: 700,

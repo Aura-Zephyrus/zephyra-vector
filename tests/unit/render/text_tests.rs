@@ -476,20 +476,26 @@ fn lcd_order_selects_distinct_shader_modes() {
     };
     let shaped = stack.shape("H", &style, None);
 
-    let (_, plain) = stack.glyph_quads(&shaped, Point::new(0.0, 0.0), &style).unwrap();
+    let (_, plain) = stack
+        .glyph_quads(&shaped, Point::new(0.0, 0.0), &style)
+        .unwrap();
     assert_eq!(plain[0].mask.mode_code(), 2.0, "默认应为 MSDF");
 
     let rgb = TextStyle {
         lcd: Some(crate::paint::LcdOrder::Rgb),
         ..style.clone()
     };
-    let (_, quads) = stack.glyph_quads(&shaped, Point::new(0.0, 0.0), &rgb).unwrap();
+    let (_, quads) = stack
+        .glyph_quads(&shaped, Point::new(0.0, 0.0), &rgb)
+        .unwrap();
     assert_eq!(quads[0].mask.mode_code(), 3.0, "RGB 应为 mode 3");
 
     let bgr = TextStyle {
         lcd: Some(crate::paint::LcdOrder::Bgr),
         ..style
     };
-    let (_, quads) = stack.glyph_quads(&shaped, Point::new(0.0, 0.0), &bgr).unwrap();
+    let (_, quads) = stack
+        .glyph_quads(&shaped, Point::new(0.0, 0.0), &bgr)
+        .unwrap();
     assert_eq!(quads[0].mask.mode_code(), 4.0, "BGR 应为 mode 4");
 }

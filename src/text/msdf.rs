@@ -40,11 +40,7 @@ impl Segment {
 }
 
 /// 三个通道的方向（相隔 120°）。边法线最接近哪个方向，就归到哪个通道。
-const CHANNEL_DIRS: [(f32, f32); 3] = [
-    (1.0, 0.0),
-    (-0.5, 0.866_025_4),
-    (-0.5, -0.866_025_4),
-];
+const CHANNEL_DIRS: [(f32, f32); 3] = [(1.0, 0.0), (-0.5, 0.866_025_4), (-0.5, -0.866_025_4)];
 
 /// 轮廓收集器：`ttf_parser` 回调的是字体单位、y 向上的坐标，这里只记录原始点，
 /// 换算到像素坐标与 y 翻转交给 [`outline_segments`]。
@@ -131,7 +127,9 @@ pub fn outline_segments(
         return Vec::new();
     }
     if collector.current.len() > 1 {
-        collector.contours.push(std::mem::take(&mut collector.current));
+        collector
+            .contours
+            .push(std::mem::take(&mut collector.current));
     }
 
     // 先变换后求 bbox，再用 origin 对齐（正常情况下 bbox.min 就等于 origin）。
@@ -215,12 +213,7 @@ fn assign_colors(segments: &[Segment], coverage: &[u8], w: u32, h: u32) -> Vec<u
             let mut nx = -dy / len;
             let mut ny = dx / len;
             let mid = ((s.a.0 + s.b.0) * 0.5, (s.a.1 + s.b.1) * 0.5);
-            if inside(
-                coverage,
-                w,
-                h,
-                (mid.0 + nx * 0.75, mid.1 + ny * 0.75),
-            ) {
+            if inside(coverage, w, h, (mid.0 + nx * 0.75, mid.1 + ny * 0.75)) {
                 nx = -nx;
                 ny = -ny;
             }
@@ -278,7 +271,11 @@ pub fn generate(
                 let d = if best.is_finite() {
                     // 符号必须与 `sdf::encode` 一致：**内侧为正、外侧为负**
                     // （`smoothstep(0.5-w, 0.5+w, s)` 在高值处给 1 = 墨迹）。
-                    if is_in { best } else { -best }
+                    if is_in {
+                        best
+                    } else {
+                        -best
+                    }
                 } else {
                     // 该方向没有边：用真实距离，保证平滑边缘上三通道一致。
                     g
@@ -351,8 +348,14 @@ mod tests {
             (raster.offset.x, raster.offset.y),
         );
         assert!(!segs.is_empty(), "真实字形应能提取到轮廓线段");
-        let min_x = segs.iter().map(|s| s.a.0.min(s.b.0)).fold(f32::MAX, f32::min);
-        let min_y = segs.iter().map(|s| s.a.1.min(s.b.1)).fold(f32::MAX, f32::min);
+        let min_x = segs
+            .iter()
+            .map(|s| s.a.0.min(s.b.0))
+            .fold(f32::MAX, f32::min);
+        let min_y = segs
+            .iter()
+            .map(|s| s.a.1.min(s.b.1))
+            .fold(f32::MAX, f32::min);
         assert!(
             min_x.abs() <= 1.5 && min_y.abs() <= 1.5,
             "轮廓应对齐到墨迹原点 (0,0)，实得 ({min_x:.2},{min_y:.2})"

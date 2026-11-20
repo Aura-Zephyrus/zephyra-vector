@@ -143,6 +143,7 @@ fn reused_path_byte_identical_to_one_shot_path() {
                 dst: Rect::new(0.0, 0.0, 8.0, 8.0),
                 color_glyph: false,
                 mask: crate::paint::GlyphMask::Coverage,
+                kind: crate::render::quad::kind::GLYPH,
             }]
             .into(),
             offset: Point::new(0.0, 0.0),
@@ -577,6 +578,7 @@ fn text_cmd(dst: Rect) -> Command {
             dst,
             color_glyph: false,
             mask: crate::paint::GlyphMask::Coverage,
+            kind: crate::render::quad::kind::GLYPH,
         }]
         .into(),
         offset: Point::new(0.0, 0.0),
@@ -1402,6 +1404,7 @@ fn translate_also_applies_to_glyphs() {
             dst: Rect::new(16.0, 16.0, 32.0, 32.0),
             color_glyph: false,
             mask: crate::paint::GlyphMask::Coverage,
+            kind: crate::render::quad::kind::GLYPH,
         }]
         .into(),
         offset: Point::new(0.0, 0.0),

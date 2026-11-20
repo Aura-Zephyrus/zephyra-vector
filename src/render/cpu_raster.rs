@@ -296,8 +296,7 @@ impl CpuCanvas {
                             let s = atlas.map(|at| at.sample_sdf(uv)).unwrap_or(0.0);
                             smoothstep(0.5 - half, 0.5 + half, s)
                         } else if mode < 2.5 {
-                            let [r, g, b] =
-                                atlas.map(|at| at.sample_msdf(uv)).unwrap_or([0.0; 3]);
+                            let [r, g, b] = atlas.map(|at| at.sample_msdf(uv)).unwrap_or([0.0; 3]);
                             smoothstep(0.5 - half - emb, 0.5 + half - emb, median3(r, g, b))
                         } else {
                             // LCD：沿 x 取三次 MSDF 样本。CPU 参考路径没有逐通道

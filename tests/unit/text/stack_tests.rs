@@ -2,7 +2,7 @@
 // 模块路径不变（src 里的声明用 #[path] 指过来），所以 use super::* 与私有可见性都照旧。
 
 use super::*;
-use crate::text::{TextEngine, TextRender};
+use crate::text::{TextDecoration, TextEngine, TextRender};
 
 fn stack(advance: f32) -> TextStack<FixedWidth> {
     TextStack::new(FixedWidth { advance })
@@ -460,4 +460,105 @@ fn host_can_install_custom_eviction_policy() {
         present.len()
     );
     assert!(!quads.is_empty(), "淘汰之后仍应有字形可见");
+}
+
+/// 装饰线作为额外的纯色 RECT 四边形产出，位置由基线决定。
+#[test]
+fn decorations_are_emitted_as_rect_quads() {
+    let mut s = stack(10.0);
+    let style = TextStyle {
+        size: 20.0,
+        decoration: TextDecoration {
+            underline: true,
+            strikethrough: true,
+            overline: true,
+        },
+        decoration_thickness: Some(1.0),
+        decoration_offset: Some(4.0),
+        ..Default::default()
+    };
+    let shaped = s.shape("AB", &style, None);
+    let glyph_count = shaped.lines[0].glyphs.len();
+    let (_atlas, quads) = s
+        .glyph_quads(&shaped, Point::new(0.0, 0.0), &style)
+        .unwrap();
+    assert_eq!(
+        quads.len(),
+        glyph_count + 3,
+        "两个字形 + 三条装饰线应为 5 个四边形，实得 {}",
+        quads.len()
+    );
+    let deco: Vec<_> = quads
+        .iter()
+        .filter(|q| (q.kind - crate::render::quad::kind::RECT).abs() < 0.01)
+        .collect();
+    assert_eq!(deco.len(), 3);
+    let baseline_y = shaped.lines[0].baseline.y;
+    // overline 在基线之上（y 更小），underline 在基线之下。
+    let ys: Vec<f32> = deco.iter().map(|q| q.dst.y).collect();
+    // 产出顺序：underline、strikethrough、overline。
+    assert!(
+        (ys[0] - (baseline_y + 4.0 - 0.5)).abs() < 0.01,
+        "underline 应在基线下 4px（减去半线宽），实得 {}",
+        ys[0]
+    );
+    assert!(
+        ys[2] < baseline_y - 15.0,
+        "overline 应在字形顶部附近，实得 {}",
+        ys[2]
+    );
+    for q in &deco {
+        assert!((q.dst.height - 1.0).abs() < 0.01, "装饰线粗细应为 1px");
+    }
+}
+
+/// Justify 只在非末行的空白处分配额外间距。
+#[test]
+fn justify_spreads_only_non_final_lines() {
+    let mut s = stack(10.0);
+    let style = TextStyle {
+        size: 20.0,
+        text_align: crate::text::TextAlign::Justify,
+        ..Default::default()
+    };
+    // 第一段 "a b" 宽 30px，容器 40px；它是非末行，应拉伸到 40px。
+    // 第二段 "c" 是末行，保持左对齐。
+    let shaped = s.shape("a b\nc", &style, Some(40.0));
+    assert_eq!(shaped.lines.len(), 2);
+    let first = &shaped.lines[0];
+    assert!(!first.is_last);
+    assert!(
+        (first.width - 40.0).abs() < 0.01,
+        "非末行应拉伸到容器宽度，实得 {}",
+        first.width
+    );
+    // 空格后的字形应被推后 10px。
+    assert!(
+        (first.glyphs[2].offset.x - 30.0).abs() < 0.01,
+        "空格后的字形应右移 10px，实得 {}",
+        first.glyphs[2].offset.x
+    );
+    let last = &shaped.lines[1];
+    assert!(last.is_last);
+    assert!((last.glyphs[0].offset.x).abs() < 0.01, "末行不应拉伸");
+}
+
+/// `TextStyle.embolden` 覆盖回退链合成值，一路传到顶点掩码。
+#[test]
+fn embolden_override_reaches_vertex_mask() {
+    let mut s = stack(10.0);
+    let style = TextStyle {
+        size: 20.0,
+        embolden: Some(0.021),
+        ..Default::default()
+    };
+    let shaped = s.shape("A", &style, None);
+    let (_atlas, quads) = s
+        .glyph_quads(&shaped, Point::new(0.0, 0.0), &style)
+        .unwrap();
+    assert!(
+        (quads[0].mask.embolden() - 0.021).abs() < 1e-6,
+        "伪粗体阈值应传到 mask，实得 {}",
+        quads[0].mask.embolden()
+    );
 }

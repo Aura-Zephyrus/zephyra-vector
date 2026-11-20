@@ -222,10 +222,16 @@ impl<S: GlyphSource> TextStack<S> {
                 let runs = self.source.shape(line_text, style);
 
                 let mut glyphs: Vec<PlacedGlyph> = Vec::new();
+                // 与 glyphs 平行：该字形的字素簇是否以空白开头（两端对齐的拉伸点）。
+                let mut break_after: Vec<bool> = Vec::new();
                 let mut pen = 0.0f32;
                 let mut seen_clusters = std::collections::HashSet::new();
                 for run in runs {
                     for g in run.glyphs {
+                        let is_space = line_text[g.cluster.start..]
+                            .chars()
+                            .next()
+                            .is_some_and(char::is_whitespace);
                         // 字间距按字素簇而不是按字形：连字合成的多个字符只算一次。
                         let spacing = if seen_clusters.insert(g.cluster.start) {
                             style.letter_spacing
@@ -241,14 +247,36 @@ impl<S: GlyphSource> TextStack<S> {
                             color_glyph: g.color_glyph,
                             embolden: g.embolden,
                         });
+                        break_after.push(is_space);
                         pen += g.advance;
                     }
                 }
+
+                let is_last = pi + 1 == paragraph_count && end >= para.len();
+                // Justify：把剩余宽度均摊到空白簇上，末行保持左对齐（CSS 行为）。
+                if style.text_align == TextAlign::Justify && !is_last {
+                    if let Some(max) = max_width {
+                        let extra = max - pen;
+                        let breaks = break_after.iter().filter(|&&b| b).count();
+                        if extra > 0.0 && breaks > 0 {
+                            let per = extra / breaks as f32;
+                            let mut shift = 0.0f32;
+                            for (i, g) in glyphs.iter_mut().enumerate() {
+                                g.offset.x += shift;
+                                if break_after[i] {
+                                    shift += per;
+                                }
+                            }
+                            pen += extra;
+                        }
+                    }
+                }
+
                 lines.push(Line {
                     baseline: Point::new(0.0, 0.0),
                     width: pen,
                     glyphs,
-                    is_last: pi + 1 == paragraph_count && end >= para.len(),
+                    is_last,
                 });
 
                 if end >= para.len() {
@@ -294,7 +322,8 @@ impl<S: GlyphSource> TextStack<S> {
         // 对齐以 `max_width` 为容器宽度：Left=0, Center=0.5, Right=1。
         // `max_width` 为 None 时只有一行，宽度已是文本宽度，不做对齐。
         let align_factor = match style.text_align {
-            TextAlign::Left => 0.0,
+            // Justify 的额外宽度已在 layout() 里摊到空白上，这里不能再整体平移。
+            TextAlign::Left | TextAlign::Justify => 0.0,
             TextAlign::Center => 0.5,
             TextAlign::Right => 1.0,
         };
@@ -501,17 +530,72 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                     mask: match style.lcd {
                         Some(order) => GlyphMask::LcdMsdf {
                             w,
-                            embolden: g.embolden,
+                            embolden: style.embolden.unwrap_or(g.embolden),
                             order,
                         },
                         None => GlyphMask::Msdf {
                             w,
-                            embolden: g.embolden,
+                            embolden: style.embolden.unwrap_or(g.embolden),
                         },
                     },
+                    kind: crate::render::quad::kind::GLYPH,
                 });
             }
         }
+
+        // ---- 装饰线：按每行**实际字形跨度**追加纯色矩形。----
+        //
+        // 用字形跨度而不是 `line.width`：两端对齐后两者可能不同，而装饰线必须
+        // 跟着字形走。走 RECT 分支，不采样纹理，也不增加 shader 变体。
+        if style.decoration.any() {
+            let thickness = style
+                .decoration_thickness
+                .unwrap_or(display_px * 0.06)
+                .max(0.5);
+            let underline_offset = style.decoration_offset.unwrap_or(display_px * 0.12);
+            for line in &shaped.lines {
+                let Some(x0) = line
+                    .glyphs
+                    .iter()
+                    .map(|g| g.offset.x)
+                    .fold(None, |acc: Option<f32>, x| {
+                        Some(acc.map_or(x, |a| a.min(x)))
+                    })
+                else {
+                    continue;
+                };
+                let x1 = line
+                    .glyphs
+                    .iter()
+                    .map(|g| g.offset.x + g.advance)
+                    .fold(f32::MIN, f32::max);
+                if x1 <= x0 {
+                    continue;
+                }
+                let baseline_y = origin.y + line.baseline.y;
+                let mut ys = Vec::new();
+                if style.decoration.underline {
+                    ys.push(baseline_y + underline_offset);
+                }
+                if style.decoration.strikethrough {
+                    ys.push(baseline_y - display_px * 0.30);
+                }
+                if style.decoration.overline {
+                    ys.push(baseline_y - display_px * 0.78);
+                }
+                for y in ys {
+                    quads.push(GlyphQuad {
+                        uv: UvRect::FULL,
+                        dst: Rect::new(origin.x + x0, y - thickness * 0.5, x1 - x0, thickness),
+                        color_glyph: false,
+                        // RECT 分支不读 mask，填一个合法值即可。
+                        mask: GlyphMask::Coverage,
+                        kind: crate::render::quad::kind::RECT,
+                    });
+                }
+            }
+        }
+
         Some((TextureRef::new(super::ATLAS_NAME), quads))
     }
 }

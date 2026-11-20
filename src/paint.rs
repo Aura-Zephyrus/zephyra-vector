@@ -429,8 +429,14 @@ impl GlyphMask {
             Self::Coverage => 0.0,
             Self::Sdf { .. } => 1.0,
             Self::Msdf { .. } => 2.0,
-            Self::LcdMsdf { order: LcdOrder::Rgb, .. } => 3.0,
-            Self::LcdMsdf { order: LcdOrder::Bgr, .. } => 4.0,
+            Self::LcdMsdf {
+                order: LcdOrder::Rgb,
+                ..
+            } => 3.0,
+            Self::LcdMsdf {
+                order: LcdOrder::Bgr,
+                ..
+            } => 4.0,
         }
     }
 
@@ -438,9 +444,7 @@ impl GlyphMask {
     pub fn w(self) -> f32 {
         match self {
             Self::Coverage => 0.0,
-            Self::Sdf { w }
-            | Self::Msdf { w, .. }
-            | Self::LcdMsdf { w, .. } => w,
+            Self::Sdf { w } | Self::Msdf { w, .. } | Self::LcdMsdf { w, .. } => w,
         }
     }
 
@@ -467,6 +471,11 @@ pub struct GlyphQuad {
     pub color_glyph: bool,
     /// 采样方式。取代原先的 `sdf: Option<f32>`。
     pub mask: GlyphMask,
+    /// 顶点类型。字形走 `GLYPH`；装饰线走 `RECT`（纯色 SDF，不采纹理）。
+    ///
+    /// 默认常量见 [`crate::render::quad::kind::GLYPH`]，直接写 1.0 是为了
+    /// 避免 paint 层反向依赖 render 层。
+    pub kind: f32,
 }
 
 /// 一条命令的排序键。

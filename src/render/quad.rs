@@ -1727,9 +1727,21 @@ pub fn expand_range_translated_into(
                             )
                         }
                     };
-                    out.solid.extend_from_slice(&Vertex::from_glyph_rect(
-                        rect, px, rgba, uv, g.mask,
-                    ));
+                    if (g.kind - kind::GLYPH).abs() < 0.01 {
+                        out.solid.extend_from_slice(&Vertex::from_glyph_rect(
+                            rect, px, rgba, uv, g.mask,
+                        ));
+                    } else {
+                        // 装饰线：纯色圆角矩形（半径取半线宽，得到 1px 抗锯齿），
+                        // 不采样纹理。复用 RECT 分支，不增加 shader 变体。
+                        let radius = (rect.height * 0.5).min(0.5);
+                        out.solid.extend_from_slice(&Vertex::from_rect(
+                            rect,
+                            px,
+                            rgba,
+                            [radius, 0.0],
+                        ));
+                    }
                     out.report.quads += 1;
                 }
                 // 整段文本记成一段：字形之间没有纹理/混合模式的变化，拆开只会让
