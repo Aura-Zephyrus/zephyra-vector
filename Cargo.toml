@@ -13,9 +13,16 @@ publish = false
 # 这个 crate 是「后端无关绘制」的全部：路径几何、图标、文本排版与图集、
 # 顶点展开、离屏规划与 CPU 光栅。它与主仓库代码完全隔离：依赖方向严格单向
 # （主仓库 → 本库），本库**不依赖任何 workspace 内的 crate**。
-# 门禁：`cargo tree -p zephyra-vector --depth 1` 只能出现 ab_glyph / bytemuck。
+# 门禁：`cargo tree -p zephyra-vector --depth 1` 只能出现下列纯 Rust 依赖：
+# ab_glyph（字形栅格）、rustybuzz（GSUB/GPOS 整形）、unicode-*（BiDi/字素簇/断行/script）、
+# bytemuck。全部无系统库依赖。
 [dependencies]
 ab_glyph = "0.2"
+rustybuzz = "0.20"
+unicode-bidi = "0.3"
+unicode-segmentation = "1"
+unicode-script = "0.5"
+unicode-linebreak = "0.1"
 bytemuck = { version = "1", features = ["derive"] }
 
 [lints.rust]

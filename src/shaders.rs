@@ -38,30 +38,102 @@ pub const VS_BYTECODE: &[u8] = include_bytes!("../shaders/dxbc/zephyra.vs.bin");
 
 /// 像素着色器变体表。哪个混合模式用哪个变体由宿主决定（后端自己的决策）。
 pub const PS_VARIANTS: [(&str, &[u8]); 24] = [
-    ("PSBackdropBlur", include_bytes!("../shaders/dxbc/zephyra.PSBackdropBlur.ps.bin")),
-    ("PSBlurH", include_bytes!("../shaders/dxbc/zephyra.PSBlurH.ps.bin")),
-    ("PSBlurV", include_bytes!("../shaders/dxbc/zephyra.PSBlurV.ps.bin")),
-    ("PSColor", include_bytes!("../shaders/dxbc/zephyra.PSColor.ps.bin")),
-    ("PSColorBurn", include_bytes!("../shaders/dxbc/zephyra.PSColorBurn.ps.bin")),
-    ("PSColorDodge", include_bytes!("../shaders/dxbc/zephyra.PSColorDodge.ps.bin")),
-    ("PSComposite", include_bytes!("../shaders/dxbc/zephyra.PSComposite.ps.bin")),
-    ("PSDarken", include_bytes!("../shaders/dxbc/zephyra.PSDarken.ps.bin")),
-    ("PSDifference", include_bytes!("../shaders/dxbc/zephyra.PSDifference.ps.bin")),
-    ("PSExclusion", include_bytes!("../shaders/dxbc/zephyra.PSExclusion.ps.bin")),
-    ("PSHardLight", include_bytes!("../shaders/dxbc/zephyra.PSHardLight.ps.bin")),
-    ("PSHighlight", include_bytes!("../shaders/dxbc/zephyra.PSHighlight.ps.bin")),
-    ("PSHollowShadow", include_bytes!("../shaders/dxbc/zephyra.PSHollowShadow.ps.bin")),
-    ("PSHue", include_bytes!("../shaders/dxbc/zephyra.PSHue.ps.bin")),
-    ("PSInnerShadow", include_bytes!("../shaders/dxbc/zephyra.PSInnerShadow.ps.bin")),
-    ("PSLens", include_bytes!("../shaders/dxbc/zephyra.PSLens.ps.bin")),
-    ("PSLighten", include_bytes!("../shaders/dxbc/zephyra.PSLighten.ps.bin")),
-    ("PSLuminosity", include_bytes!("../shaders/dxbc/zephyra.PSLuminosity.ps.bin")),
-    ("PSMain", include_bytes!("../shaders/dxbc/zephyra.PSMain.ps.bin")),
-    ("PSMultiply", include_bytes!("../shaders/dxbc/zephyra.PSMultiply.ps.bin")),
-    ("PSOverlay", include_bytes!("../shaders/dxbc/zephyra.PSOverlay.ps.bin")),
-    ("PSRefraction", include_bytes!("../shaders/dxbc/zephyra.PSRefraction.ps.bin")),
-    ("PSSaturation", include_bytes!("../shaders/dxbc/zephyra.PSSaturation.ps.bin")),
-    ("PSSoftLight", include_bytes!("../shaders/dxbc/zephyra.PSSoftLight.ps.bin")),
+    (
+        "PSBackdropBlur",
+        include_bytes!("../shaders/dxbc/zephyra.PSBackdropBlur.ps.bin"),
+    ),
+    (
+        "PSBlurH",
+        include_bytes!("../shaders/dxbc/zephyra.PSBlurH.ps.bin"),
+    ),
+    (
+        "PSBlurV",
+        include_bytes!("../shaders/dxbc/zephyra.PSBlurV.ps.bin"),
+    ),
+    (
+        "PSColor",
+        include_bytes!("../shaders/dxbc/zephyra.PSColor.ps.bin"),
+    ),
+    (
+        "PSColorBurn",
+        include_bytes!("../shaders/dxbc/zephyra.PSColorBurn.ps.bin"),
+    ),
+    (
+        "PSColorDodge",
+        include_bytes!("../shaders/dxbc/zephyra.PSColorDodge.ps.bin"),
+    ),
+    (
+        "PSComposite",
+        include_bytes!("../shaders/dxbc/zephyra.PSComposite.ps.bin"),
+    ),
+    (
+        "PSDarken",
+        include_bytes!("../shaders/dxbc/zephyra.PSDarken.ps.bin"),
+    ),
+    (
+        "PSDifference",
+        include_bytes!("../shaders/dxbc/zephyra.PSDifference.ps.bin"),
+    ),
+    (
+        "PSExclusion",
+        include_bytes!("../shaders/dxbc/zephyra.PSExclusion.ps.bin"),
+    ),
+    (
+        "PSHardLight",
+        include_bytes!("../shaders/dxbc/zephyra.PSHardLight.ps.bin"),
+    ),
+    (
+        "PSHighlight",
+        include_bytes!("../shaders/dxbc/zephyra.PSHighlight.ps.bin"),
+    ),
+    (
+        "PSHollowShadow",
+        include_bytes!("../shaders/dxbc/zephyra.PSHollowShadow.ps.bin"),
+    ),
+    (
+        "PSHue",
+        include_bytes!("../shaders/dxbc/zephyra.PSHue.ps.bin"),
+    ),
+    (
+        "PSInnerShadow",
+        include_bytes!("../shaders/dxbc/zephyra.PSInnerShadow.ps.bin"),
+    ),
+    (
+        "PSLens",
+        include_bytes!("../shaders/dxbc/zephyra.PSLens.ps.bin"),
+    ),
+    (
+        "PSLighten",
+        include_bytes!("../shaders/dxbc/zephyra.PSLighten.ps.bin"),
+    ),
+    (
+        "PSLuminosity",
+        include_bytes!("../shaders/dxbc/zephyra.PSLuminosity.ps.bin"),
+    ),
+    (
+        "PSMain",
+        include_bytes!("../shaders/dxbc/zephyra.PSMain.ps.bin"),
+    ),
+    (
+        "PSMultiply",
+        include_bytes!("../shaders/dxbc/zephyra.PSMultiply.ps.bin"),
+    ),
+    (
+        "PSOverlay",
+        include_bytes!("../shaders/dxbc/zephyra.PSOverlay.ps.bin"),
+    ),
+    (
+        "PSRefraction",
+        include_bytes!("../shaders/dxbc/zephyra.PSRefraction.ps.bin"),
+    ),
+    (
+        "PSSaturation",
+        include_bytes!("../shaders/dxbc/zephyra.PSSaturation.ps.bin"),
+    ),
+    (
+        "PSSoftLight",
+        include_bytes!("../shaders/dxbc/zephyra.PSSoftLight.ps.bin"),
+    ),
 ];
 
 /// 具名字节码常量。宿主端 `PS_VARIANTS` 的顺序绑定 `BlendMode` 枚举，不是字典序，

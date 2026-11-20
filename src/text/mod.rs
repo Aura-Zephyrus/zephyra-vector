@@ -35,14 +35,21 @@
 //! 降级时发生。core 有图集，于是能给出 uv；core 不碰纹理句柄，于是只用那个不透明
 //! 的 [`crate::paint::TextureRef`]。
 //!
+//! # 整形能力
+//!
+//! 真实字体来源（`AbGlyphSource`）通过 `rustybuzz` 实现 GSUB/GPOS：连字、字距对、
+//! mark 定位以及阿拉伯语/天城文等复杂脚本的上下文字形。BiDi 由 `unicode-bidi`
+//! 处理，断行用 UAX #14 并对齐到字素簇边界；`TextStyle::direction` 可显式覆盖
+//! 段落基准方向。
+//!
 //! # 已知限制
 //!
-//! **没有 GSUB/GPOS 整形。** 本层不做连字、双向文本与复杂脚本 —— 那些需要完整的
-//! OpenType 整形栈。阿拉伯语、印地语会显示成逐字孤立字形。要支持就得换一个更强的
-//! [`GlyphSource`]（且 [`GlyphSource::advance`] 需要返回整段而非单字形，以承载
-//! 字素簇）。
-//!
-//! 行内断行按**字符边界**切，不做连字符与字素簇感知的断词。对 UI 标签够用。
+//! - **字体回退与 `TextStyle::weight` / `family` 尚未生效**：当前只持有一份字体，
+//!   缺字统一替换为 U+FFFD；多字体回退与可变字体轴不在本层范围内。
+//! - **彩色字形未光栅化**：emoji 的 ZWJ 序列在整形层能合成 cluster，但
+//!   `AbGlyphSource` 只栅格化 `glyf` 轮廓，COLR/CBDT 尚未接入。
+//! - `GlyphSource::advance` 仍是单字符接口（用于光标定位等场景）；完整排版请走
+//!   [`GlyphSource::shape`] 与 [`crate::text::TextEngine::shape`]。
 
 use crate::core::{Point, Rect, Size, UvRect};
 use crate::paint::{GlyphQuad, TextureRef};
@@ -50,10 +57,12 @@ use crate::paint::{GlyphQuad, TextureRef};
 pub mod ab_glyph_source;
 pub mod atlas;
 pub mod sdf;
+pub mod shape;
 pub mod stack;
 
 pub use ab_glyph_source::{from_font_file, from_system_font, AbGlyphSource, FONT_OVERRIDE_ENV};
 pub use sdf::{sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD, SDF_TIERS};
+pub use shape::{bidi_runs, line_break_opportunities, ShapedGlyph, ShapedRun};
 
 /// `GlyphAtlas` 的**坐标契约**测试。
 ///
@@ -103,6 +112,14 @@ pub trait GlyphSource {
     /// `None` = 空白字形（空格、零宽字符）—— 它们没有位图，但**有**步进。
     fn rasterize(&mut self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster>;
 
+    /// 把一段文本整形为**视觉顺序**的字形 run。
+    ///
+    /// 默认实现退化为逐字符（没有 GSUB/GPOS、没有 BiDi），供替身与降级路径使用；
+    /// 真实字体来源应覆盖它，用 `rustybuzz` 做连字、字距对、复杂脚本与 BiDi。
+    fn shape(&mut self, text: &str, style: &TextStyle) -> Vec<ShapedRun> {
+        shape::naive_shape(self, text, style)
+    }
+
     /// 该来源在图集里的字体 id。同一份字节的多次加载必须返回**相同**的 id ——
     /// 否则同一个字形会在图集里存多份，白白吃掉容量。
     fn font_id(&self) -> u32;
@@ -132,6 +149,15 @@ pub enum TextAlign {
     Right,
 }
 
+/// 段落基准方向。`Auto` 由 Unicode BiDi 算法根据首个强方向字符推断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextDirection {
+    #[default]
+    Auto,
+    Ltr,
+    Rtl,
+}
+
 /// 文本样式。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextStyle {
@@ -155,6 +181,8 @@ pub struct TextStyle {
     pub paragraph_spacing: f32,
     /// 字号缩放系数（Windows 的「文本大小」设置会改它）。
     pub scale: f32,
+    /// 段落基准方向；默认由 BiDi 自动推断。
+    pub direction: TextDirection,
 }
 
 impl Default for TextStyle {
@@ -168,6 +196,7 @@ impl Default for TextStyle {
             text_align: TextAlign::Left,
             paragraph_spacing: 0.0,
             scale: 1.0,
+            direction: TextDirection::Auto,
         }
     }
 }
@@ -230,6 +259,8 @@ pub struct Line {
 pub struct PlacedGlyph {
     /// 字形 id。
     pub glyph_id: u32,
+    /// 字形所属字体 id（用于图集查表，支持多字体/回退）。
+    pub font_id: u32,
     /// 相对基线的位置。
     pub offset: Point,
     /// 步进宽度。
@@ -364,6 +395,7 @@ impl TextEngine for NullEngine {
                 .map(|c| {
                     let g = PlacedGlyph {
                         glyph_id: *c as u32,
+                        font_id: 0,
                         offset: Point::new(x, 0.0),
                         advance: cw,
                         color_glyph: false,

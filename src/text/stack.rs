@@ -22,6 +22,7 @@ use crate::paint::{GlyphQuad, TextureRef};
 
 use super::{
     atlas::AtlasRaster,
+    line_break_opportunities,
     sdf::{from_coverage, sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD},
     GlyphAtlas, GlyphSource, Line, PlacedGlyph, ShapedText, TextAlign, TextRender, TextStyle,
 };
@@ -133,63 +134,126 @@ impl<S: GlyphSource> TextStack<S> {
         }
     }
 
-    /// 排版：按 `max_width` 断行。
+    /// 排版：显式换行 + UAX #14 自动断行 + 按字素簇整形。
     ///
-    /// 断行按**字符边界**切，不做连字符与字素簇感知的断词 —— 对 UI 标签够用。
+    /// `line_break_opportunities` 给出合法断点；当段内没有任何合法断点能放下时
+    /// （例如一长串没有空格的字母），退化为按字素簇强断，保证不会生成空行或死循环。
     fn layout(
         &mut self,
         text: &str,
+        style: &TextStyle,
         px_size: f32,
-        letter_spacing: f32,
         max_width: Option<f32>,
     ) -> Vec<Line> {
-        let mut lines = Vec::new();
-        let mut current: Vec<PlacedGlyph> = Vec::new();
-        let mut width = 0.0f32;
+        use unicode_segmentation::UnicodeSegmentation;
 
-        for ch in text.chars() {
-            // 显式换行优先于自动断行。
-            if ch == '\n' {
+        let mut lines: Vec<Line> = Vec::new();
+        let paragraphs: Vec<&str> = text.split('\n').collect();
+        let paragraph_count = paragraphs.len();
+
+        for (pi, para) in paragraphs.into_iter().enumerate() {
+            // 字素簇边界与各自的近似宽度（仅用于断行决策）。
+            let mut bounds: Vec<usize> = para.grapheme_indices(true).map(|(i, _)| i).collect();
+            bounds.push(para.len());
+            let mut cluster_widths = Vec::with_capacity(bounds.len().saturating_sub(1));
+            for w in bounds.windows(2) {
+                let slice = &para[w[0]..w[1]];
+                let width: f32 = slice
+                    .chars()
+                    .map(|ch| {
+                        let id = self.source.glyph_id(ch);
+                        self.source.advance(id, px_size) + style.letter_spacing
+                    })
+                    .sum();
+                cluster_widths.push(width);
+            }
+            let breaks = line_break_opportunities(para);
+
+            let mut start = 0usize;
+            loop {
+                let mut end = para.len();
+                if let Some(max) = max_width {
+                    if start < para.len() {
+                        let mut acc = 0.0f32;
+                        let mut best = None;
+                        for (i, &b) in bounds.iter().enumerate().skip(1) {
+                            if b <= start {
+                                continue;
+                            }
+                            acc += cluster_widths[i - 1];
+                            if acc > max {
+                                break;
+                            }
+                            if breaks.binary_search(&b).is_ok() {
+                                best = Some(b);
+                            }
+                        }
+                        if let Some(b) = best {
+                            end = b;
+                        } else {
+                            // 没有合法断点：按字素簇强断，且至少放一个簇。
+                            let mut acc = 0.0f32;
+                            let mut last = bounds
+                                .iter()
+                                .find(|&&b| b > start)
+                                .copied()
+                                .unwrap_or(para.len());
+                            let mut first = true;
+                            for (i, &b) in bounds.iter().enumerate().skip(1) {
+                                if b <= start {
+                                    continue;
+                                }
+                                let w = cluster_widths[i - 1];
+                                if !first && acc + w > max {
+                                    break;
+                                }
+                                acc += w;
+                                last = b;
+                                first = false;
+                            }
+                            end = last;
+                        }
+                    }
+                }
+
+                let line_text = &para[start..end];
+                let runs = self.source.shape(line_text, style);
+
+                let mut glyphs: Vec<PlacedGlyph> = Vec::new();
+                let mut pen = 0.0f32;
+                let mut seen_clusters = std::collections::HashSet::new();
+                for run in runs {
+                    for g in run.glyphs {
+                        // 字间距按字素簇而不是按字形：连字合成的多个字符只算一次。
+                        let spacing = if seen_clusters.insert(g.cluster.start) {
+                            style.letter_spacing
+                        } else {
+                            0.0
+                        };
+                        glyphs.push(PlacedGlyph {
+                            glyph_id: g.glyph_id,
+                            font_id: g.font_id,
+                            // x_offset 是 GPOS 的临时偏移，不改变 pen；y 取 core 的 y-down。
+                            offset: Point::new(pen + g.offset.x, g.offset.y),
+                            advance: g.advance + spacing,
+                            color_glyph: g.color_glyph,
+                        });
+                        pen += g.advance;
+                    }
+                }
                 lines.push(Line {
                     baseline: Point::new(0.0, 0.0),
-                    width,
-                    glyphs: std::mem::take(&mut current),
-                    is_last: false,
+                    width: pen,
+                    glyphs,
+                    is_last: pi + 1 == paragraph_count && end >= para.len(),
                 });
-                width = 0.0;
-                continue;
-            }
 
-            let glyph_id = self.source.glyph_id(ch);
-            let advance = self.source.advance(glyph_id, px_size) + letter_spacing;
-
-            // 自动断行：在**加入之前**判断，于是超宽的那个字形整体换到下一行。
-            if let Some(max) = max_width {
-                if width + advance > max && !current.is_empty() {
-                    lines.push(Line {
-                        baseline: Point::new(0.0, 0.0),
-                        width,
-                        glyphs: std::mem::take(&mut current),
-                        is_last: false,
-                    });
-                    width = 0.0;
+                if end >= para.len() {
+                    break;
                 }
+                start = end;
             }
-
-            current.push(PlacedGlyph {
-                glyph_id,
-                offset: Point::new(width, 0.0),
-                advance,
-                color_glyph: false,
-            });
-            width += advance;
         }
-        lines.push(Line {
-            baseline: Point::new(0.0, 0.0),
-            width,
-            glyphs: current,
-            is_last: true,
-        });
         lines
     }
 }
@@ -220,7 +284,7 @@ impl<S: GlyphSource> TextStack<S> {
             };
         }
 
-        let mut lines = self.layout(text, px_size, style.letter_spacing, max_width);
+        let mut lines = self.layout(text, style, px_size, max_width);
 
         // 填基线与水平对齐：逐行下移一个行高，并按 text_align 给每行加 x 偏移。
         //
@@ -340,7 +404,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
         );
         // 按显示字号选 SDF 基准档：大字号用 128/256，保证只缩小不放大。
         let px = sdf_tier(display_px);
-        let font_id = self.source.font_id();
+        // 注意：图集键用的是每个字形自带的 `font_id`，支持多字体/回退场景。
 
         // 归一化用图集**实际**的边长，而不是全局 `ATLAS_SIZE`。
         //
@@ -361,7 +425,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
         // 那条"静止后连锁淘汰"的坑就回来了。
         for line in &shaped.lines {
             for g in &line.glyphs {
-                if self.atlas.touch(font_id, g.glyph_id, px).is_some() {
+                if self.atlas.touch(g.font_id, g.glyph_id, px).is_some() {
                     // 已有位图：**跳过栅格化**，只刷新了 LRU 时间戳。
                     continue;
                 }
@@ -376,7 +440,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                         spread: SDF_SPREAD,
                         base_px: px as f32,
                     });
-                self.atlas.get_or_insert(font_id, g.glyph_id, px, Some(r));
+                self.atlas.get_or_insert(g.font_id, g.glyph_id, px, Some(r));
             }
         }
 
@@ -393,7 +457,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
         let mut quads = Vec::new();
         for line in &shaped.lines {
             for g in &line.glyphs {
-                let Some(entry) = self.atlas.get(font_id, g.glyph_id, px) else {
+                let Some(entry) = self.atlas.get(g.font_id, g.glyph_id, px) else {
                     // 淘汰掉了：多半是图集装不下这一帧的整个字符集。跳过而不是
                     // 整段放弃 —— 部分文本可见远好于整段消失，且
                     // `atlas_stats().evictions` 会暴露这件事。

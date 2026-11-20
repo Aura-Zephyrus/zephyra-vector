@@ -48,7 +48,7 @@
 // 那种写法只可能在 core 外的测试里成立。
 use crate::core::Point;
 use crate::text::atlas::{
-    AtlasRaster, GlyphAtlas, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD, ATLAS_SIZE,
+    AtlasRaster, GlyphAtlas, ATLAS_SIZE, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD,
 };
 use crate::text::{GlyphSource, TextEngine, TextRender, TextStack, TextStyle};
 

@@ -434,7 +434,7 @@ fn sdf_glyph_branch_uses_red_channel_and_smoothstep() {
     let cov = |s: f32, w: f32| smoothstep(0.5 - w, 0.5 + w, s);
     let sharp = cov(0.55, 0.02); // 大字号
     let soft = cov(0.55, 0.20); // 小字号
-    // 0.55 已越过 SDF 边缘（0.5）：w 越小，覆盖率越接近满值 1。
+                                // 0.55 已越过 SDF 边缘（0.5）：w 越小，覆盖率越接近满值 1。
     assert!(sharp > soft, "w 越小过渡越窄：{sharp} 应大于 {soft}");
 }
 

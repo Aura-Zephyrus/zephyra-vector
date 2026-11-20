@@ -331,8 +331,8 @@ fn font_size_is_forwarded_not_inferred() {
         // 替身在基准分辨率画 `base/2` 见方的墨；四边形覆盖墨 + 两圈 SDF 留白，
         // 再按 显示字号 / 基准字号 缩放。
         let ink = (crate::text::SDF_BASE_PX / 2) as f32;
-        let expect = (ink + 2.0 * crate::text::SDF_PADDING as f32) * px
-            / crate::text::SDF_BASE_PX as f32;
+        let expect =
+            (ink + 2.0 * crate::text::SDF_PADDING as f32) * px / crate::text::SDF_BASE_PX as f32;
         assert_eq!(
             quads[0].dst.height, expect,
             "字号 {px} 时四边形高度应为 {expect} —— 若与字号无关，说明缩放没生效"

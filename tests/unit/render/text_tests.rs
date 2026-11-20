@@ -2,7 +2,18 @@
 // 模块路径不变（src 里的声明用 #[path] 指过来），所以 use super::* 与私有可见性都照旧。
 
 use super::*;
-use crate::text::{TextEngine, TextRender, TextStyle};
+use crate::text::stack::FixedWidth;
+use crate::text::{GlyphSource, TextDirection, TextEngine, TextRender, TextStyle};
+
+/// 按路径加载字体并直接拿到来源（不给文本栈），供整形级断言使用。
+fn source_at(path: &str) -> Option<AbGlyphSource> {
+    AbGlyphSource::from_bytes(0, &std::fs::read(path).ok()?).ok()
+}
+
+/// GSUB/GPOS 断言需要"确实带这些表"的字体。本机 Windows 字体满足，否则跳过。
+fn shaping_source() -> Option<AbGlyphSource> {
+    source_at(r"C:\Windows\Fonts\segoeui.ttf")
+}
 
 /// 系统字体可用时才跑这些断言 —— CI 上不该因为"没装某字体"而失败。
 fn system_stack() -> Option<TextStack<AbGlyphSource>> {
@@ -237,22 +248,205 @@ fn large_text_uses_a_higher_sdf_tier() {
         eprintln!("跳过：找不到系统字体");
         return;
     };
-    let small = TextStyle { size: 16.0, ..Default::default() };
-    let huge = TextStyle { size: 200.0, ..Default::default() };
+    let small = TextStyle {
+        size: 16.0,
+        ..Default::default()
+    };
+    let huge = TextStyle {
+        size: 200.0,
+        ..Default::default()
+    };
     let a = s.shape("H", &small, None);
     let (_, qa) = s.glyph_quads(&a, Point::new(0.0, 0.0), &small).unwrap();
     let before = s.atlas_stats().glyphs;
 
     let b = s.shape("H", &huge, None);
     let (_, qb) = s.glyph_quads(&b, Point::new(0.0, 0.0), &huge).unwrap();
-    assert_eq!(s.atlas_stats().glyphs, before + 1, "高档位应单独缓存一份 SDF");
-    assert!(qb[0].dst.width > qa[0].dst.width * 5.0, "200px 文本应明显大于 16px");
+    assert_eq!(
+        s.atlas_stats().glyphs,
+        before + 1,
+        "高档位应单独缓存一份 SDF"
+    );
+    assert!(
+        qb[0].dst.width > qa[0].dst.width * 5.0,
+        "200px 文本应明显大于 16px"
+    );
     // 200px 用 256 档（只缩小不放大），16px 用 64 档。
-    assert!(qb[0].sdf.unwrap() < qa[0].sdf.unwrap(), "高档位在 SDF 值域的过渡更窄");
+    assert!(
+        qb[0].sdf.unwrap() < qa[0].sdf.unwrap(),
+        "高档位在 SDF 值域的过渡更窄"
+    );
 }
 
 #[test]
 fn a_broken_font_is_rejected_rather_than_silently_ignored() {
     let r = AbGlyphSource::from_bytes(0, b"this is not a font");
     assert!(r.is_err(), "损坏的字体必须报错而不是产出空栈");
+}
+
+// ── 文本整形（GSUB / GPOS / BiDi / 字素簇） ──────────────────────────────
+
+/// rustybuzz 与 ab_glyph 必须给出同一套 glyph id，否则整形结果拿去栅格化会画错字。
+/// 两者共用 ttf-parser 0.25，这条测试钉住这个前提。
+#[test]
+fn shaper_and_rasterizer_agree_on_glyph_ids() {
+    let Some(mut src) = shaping_source() else {
+        return;
+    };
+    let style = TextStyle {
+        size: 64.0,
+        ..Default::default()
+    };
+    for ch in ['A', 'H', 'g', '中'] {
+        let shaped = src.shape(&ch.to_string(), &style);
+        let id = shaped
+            .first()
+            .and_then(|r| r.glyphs.first())
+            .map(|g| g.glyph_id);
+        assert_eq!(
+            id,
+            Some(src.glyph_id(ch)),
+            "字符 {ch:?} 的整形/栅格化 glyph id 不一致"
+        );
+    }
+}
+
+/// GSUB 连字：`fi` 在 Calibri 里合成为**一个**字形，cluster 覆盖两个字符。
+#[test]
+fn gsub_ligature_merges_glyphs_and_keeps_cluster_range() {
+    let Some(mut src) = source_at(r"C:\Windows\Fonts\calibri.ttf") else {
+        return;
+    };
+    let style = TextStyle {
+        size: 64.0,
+        ..Default::default()
+    };
+    let runs = src.shape("fi", &style);
+    let glyphs: Vec<_> = runs.into_iter().flat_map(|r| r.glyphs).collect();
+    assert_eq!(
+        glyphs.len(),
+        1,
+        "fi 应合成一个连字字形，实得 {} 个",
+        glyphs.len()
+    );
+    assert_eq!(glyphs[0].cluster, 0..2, "连字的 cluster 必须覆盖 f 和 i");
+    assert!(glyphs[0].advance > 0.0);
+}
+
+/// GPOS 字距对：Segoe UI 的 "AT" 步进应小于 A 与 T 单独步进之和。
+#[test]
+fn gpos_kerning_changes_advance() {
+    let Some(mut src) = shaping_source() else {
+        return;
+    };
+    let style = TextStyle {
+        size: 64.0,
+        ..Default::default()
+    };
+    let advance_of = |s: &str, src: &mut AbGlyphSource| -> f32 {
+        src.shape(s, &style)
+            .into_iter()
+            .flat_map(|r| r.glyphs)
+            .map(|g| g.advance)
+            .sum()
+    };
+    let pair = advance_of("AT", &mut src);
+    let separate = advance_of("A", &mut src) + advance_of("T", &mut src);
+    assert!(
+        pair < separate - 1.0,
+        "AT 应因 kerning 变窄：pair={pair} separate={separate}"
+    );
+}
+
+/// GSUB 复杂脚本：阿拉伯语 "سلام" 的首字用起笔形、末字用收笔形，不同于孤立字形。
+#[test]
+fn arabic_uses_contextual_forms() {
+    let Some(mut src) = shaping_source() else {
+        return;
+    };
+    let style = TextStyle {
+        size: 64.0,
+        direction: TextDirection::Auto,
+        ..Default::default()
+    };
+    let word = src.shape("سلام", &style);
+    assert_eq!(word.len(), 1);
+    assert!(word[0].rtl, "阿拉伯语段落应为 RTL");
+    assert_eq!(word[0].script, "Arab");
+
+    let first = word[0].glyphs.first().unwrap().glyph_id;
+    let last = word[0].glyphs.last().unwrap().glyph_id;
+    let isolated_seen = src.shape("س", &style)[0].glyphs[0].glyph_id;
+    let isolated_alef = src.shape("ا", &style)[0].glyphs[0].glyph_id;
+    assert_ne!(first, isolated_seen, "词首 س 应使用起笔形");
+    assert_ne!(last, isolated_alef, "词尾 ا 应使用收笔形");
+    // RTL run 的 cluster 从右往左递减。
+    let clusters: Vec<usize> = word[0].glyphs.iter().map(|g| g.cluster.start).collect();
+    assert!(
+        clusters.windows(2).all(|w| w[0] > w[1]),
+        "RTL cluster 应递减：{clusters:?}"
+    );
+}
+
+/// BiDi 混合段落：`TextStack` 产出的字形 x 位置按视觉顺序递增（左→右）。
+#[test]
+fn bidi_reaches_placed_glyphs() {
+    let Some(mut stack) = system_stack() else {
+        return;
+    };
+    let style = TextStyle {
+        size: 32.0,
+        ..Default::default()
+    };
+    let shaped = stack.shape("aسلام", &style, None);
+    let glyphs = &shaped.lines[0].glyphs;
+    assert_eq!(glyphs.len(), 5);
+    for pair in glyphs.windows(2) {
+        assert!(
+            pair[0].offset.x < pair[1].offset.x,
+            "视觉顺序的 x 必须递增：{:?}",
+            glyphs.iter().map(|g| g.offset.x).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// 字素簇感知断行：带组合音标的字符不得被拆到两行。
+#[test]
+fn line_break_never_splits_grapheme_in_stack() {
+    let mut s = TextStack::new(FixedWidth { advance: 10.0 });
+    let style = TextStyle {
+        size: 10.0,
+        ..Default::default()
+    };
+    let text = "ab cd\u{0301} ef gh";
+    let shaped = s.shape(text, &style, Some(28.0));
+    assert!(shaped.lines.len() > 1, "限宽应产生多行");
+    for line in &shaped.lines {
+        if let Some(g) = line.glyphs.first() {
+            let id = g.glyph_id;
+            assert_ne!(id, 0x0301, "行首不能是孤立的组合音标");
+        }
+    }
+}
+
+/// Emoji ZWJ 序列在整形层合并为同一个 cluster；彩色光栅化尚未支持，
+/// 所以这里只验整形，不断言位图。
+#[test]
+fn emoji_zwj_sequence_is_one_cluster() {
+    let Some(mut src) = shaping_source() else {
+        return;
+    };
+    let style = TextStyle {
+        size: 64.0,
+        ..Default::default()
+    };
+    let runs = src.shape("👩‍💻", &style);
+    let glyphs: Vec<_> = runs.into_iter().flat_map(|r| r.glyphs).collect();
+    assert!(!glyphs.is_empty());
+    assert!(
+        glyphs.iter().all(|g| g.cluster.start == 0),
+        "ZWJ 序列应合并为同一个 cluster：{:?}",
+        glyphs.iter().map(|g| g.cluster.clone()).collect::<Vec<_>>()
+    );
+    assert!(glyphs.iter().all(|g| !g.color_glyph));
 }

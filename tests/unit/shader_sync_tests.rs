@@ -70,10 +70,7 @@ fn committed_dxbc_matches_hlsl_sources() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
     let src = dir.join("hlsl").join("zephyra.hlsl");
     let dxbc = dir.join("dxbc");
-    let tmp = std::env::temp_dir().join(format!(
-        "zephyra_shader_gate_{}",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("zephyra_shader_gate_{}", std::process::id()));
     std::fs::create_dir_all(&tmp).expect("建临时目录失败");
 
     let mut checked = 0usize;

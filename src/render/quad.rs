@@ -1719,12 +1719,15 @@ pub fn expand_range_translated_into(
                         }
                     };
                     if let Some(w) = g.sdf {
-                        out.solid.extend_from_slice(&Vertex::from_sdf_rect(
-                            rect, px, rgba, uv, w,
-                        ));
+                        out.solid
+                            .extend_from_slice(&Vertex::from_sdf_rect(rect, px, rgba, uv, w));
                     } else {
                         out.solid.extend_from_slice(&Vertex::from_uv_rect(
-                            rect, px, rgba, uv, kind::GLYPH,
+                            rect,
+                            px,
+                            rgba,
+                            uv,
+                            kind::GLYPH,
                         ));
                     }
                     out.report.quads += 1;

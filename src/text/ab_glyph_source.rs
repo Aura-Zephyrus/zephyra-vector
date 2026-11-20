@@ -55,8 +55,10 @@
 //! 以及 `zephyra/src/text/atlas_tests.rs` 里用假字形来源钉死的契约测试。
 use crate::core::Point;
 use crate::text::sdf::{from_coverage, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD};
-use crate::text::{AtlasRaster, GlyphSource, TextStack};
+use crate::text::shape::{bidi_runs, dominant_script, rustybuzz_script, ShapedGlyph, ShapedRun};
+use crate::text::{AtlasRaster, GlyphSource, TextStack, TextStyle};
 use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont};
+use rustybuzz::ttf_parser::Tag;
 
 /// 基于 ab_glyph 的字形来源。
 ///
@@ -111,6 +113,116 @@ impl AbGlyphSource {
     /// 显式替换，而 [`GlyphSource::glyph_id`] 的文档要求实现做这件事。
     fn has_glyph(&self, id: GlyphId) -> bool {
         id.0 != 0
+    }
+
+    /// 缺字时用于替换 `.notdef` 的可见字形 id。
+    fn replacement_id(&self) -> u32 {
+        let id = self.font.glyph_id('\u{FFFD}');
+        if self.has_glyph(id) {
+            id.0 as u32
+        } else {
+            0
+        }
+    }
+
+    /// 对单个 BiDi run 做 rustybuzz 整形。
+    fn shape_run(&self, run_text: &str, rtl: bool, px_size: f32, scale: f32) -> ShapedRun {
+        let script = dominant_script(run_text);
+        let face = match rustybuzz::Face::from_slice(self.font.as_slice(), 0) {
+            Some(f) => f,
+            None => {
+                // 字体字节已被 `from_bytes` 验证过，理论上不会走到这里；真到了就
+                // 退化成逐字符，至少保证文字可见。
+                let mut glyphs = Vec::new();
+                for (i, ch) in run_text.char_indices() {
+                    let end = i + ch.len_utf8();
+                    let id = self.font.glyph_id(ch);
+                    glyphs.push(ShapedGlyph {
+                        glyph_id: id.0 as u32,
+                        font_id: self.font_id,
+                        cluster: i..end,
+                        advance: self.font.as_scaled(self.px_scale(px_size)).h_advance(id),
+                        offset: Point::ZERO,
+                        color_glyph: false,
+                    });
+                }
+                return ShapedRun {
+                    glyphs,
+                    rtl,
+                    script: "Zyyy",
+                };
+            }
+        };
+
+        // 显式打开常用特性：连字、上下文替代、字距对、mark 定位。
+        // 字体里没有的表会被 rustybuzz 安全忽略。
+        let features: Vec<rustybuzz::Feature> = [
+            "liga", "clig", "calt", "ccmp", "kern", "mark", "mkmk", "locl",
+        ]
+        .iter()
+        .map(|tag| {
+            let mut b = [0u8; 4];
+            b.copy_from_slice(tag.as_bytes());
+            rustybuzz::Feature::new(Tag::from_bytes(&b), 1, ..)
+        })
+        .collect();
+
+        let mut buffer = rustybuzz::UnicodeBuffer::new();
+        // cluster 用**字节偏移**，这样 letter_spacing 能按字素簇追加。
+        for (i, ch) in run_text.char_indices() {
+            buffer.add(ch, i as u32);
+        }
+        buffer.set_direction(if rtl {
+            rustybuzz::Direction::RightToLeft
+        } else {
+            rustybuzz::Direction::LeftToRight
+        });
+        if let Some(s) = rustybuzz_script(script) {
+            buffer.set_script(s);
+        }
+        buffer.set_cluster_level(rustybuzz::BufferClusterLevel::MonotoneGraphemes);
+        let shaped = rustybuzz::shape(&face, &features, buffer);
+
+        let infos = shaped.glyph_infos();
+        let positions = shaped.glyph_positions();
+        // cluster 的 end 取"下一个更大的 cluster 起点"，没有就到 run 末尾。
+        // 这对 LTR（0,1,4…）与 RTL（6,4,2,0）都成立；连字因此覆盖多个字符。
+        let mut starts: Vec<usize> = infos
+            .iter()
+            .map(|i| (i.cluster as usize).min(run_text.len()))
+            .collect();
+        starts.sort_unstable();
+        starts.dedup();
+        let mut glyphs = Vec::with_capacity(infos.len());
+        for (info, pos) in infos.iter().zip(positions.iter()) {
+            let start = (info.cluster as usize).min(run_text.len());
+            let end = starts
+                .binary_search(&start)
+                .ok()
+                .and_then(|i| starts.get(i + 1).copied())
+                .unwrap_or(run_text.len());
+            let id = if info.glyph_id == 0 {
+                self.replacement_id()
+            } else {
+                info.glyph_id
+            };
+            glyphs.push(ShapedGlyph {
+                glyph_id: id,
+                font_id: self.font_id,
+                cluster: start..end,
+                // ab_glyph 的 h_advance 用 hhea 行高比例；整形也必须乘同一比例，
+                // 否则同一段文字"测量"与"绘制"的步进不一致。
+                advance: pos.x_advance as f32 * scale,
+                // HarfBuzz 的 y 向上为正；核心坐标系 y 向下，所以取负。
+                offset: Point::new(pos.x_offset as f32 * scale, -(pos.y_offset as f32) * scale),
+                color_glyph: false,
+            });
+        }
+        ShapedRun {
+            glyphs,
+            rtl,
+            script: script.short_name(),
+        }
     }
 }
 
@@ -361,6 +473,23 @@ impl GlyphSource for AbGlyphSource {
             spread: SDF_SPREAD,
             base_px: px,
         })
+    }
+
+    fn shape(&mut self, text: &str, style: &TextStyle) -> Vec<ShapedRun> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let px_size = style.effective_size().max(1.0);
+        let scale = self.px_scale(px_size).x;
+        let mut out = Vec::new();
+        for (range, rtl) in bidi_runs(text, style.direction) {
+            let run_text = &text[range];
+            let shaped = self.shape_run(run_text, rtl, px_size, scale);
+            if !shaped.glyphs.is_empty() {
+                out.push(shaped);
+            }
+        }
+        out
     }
 
     fn font_id(&self) -> u32 {

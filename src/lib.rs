@@ -41,11 +41,11 @@ pub use text::ab_glyph_source::{
 };
 
 #[cfg(test)]
-#[path = "../tests/unit/shader_sync_tests.rs"]
-mod shader_sync_tests;
-#[cfg(test)]
 #[path = "../tests/unit/geom_tests.rs"]
 mod geom_tests;
 #[cfg(test)]
 #[path = "../tests/unit/icon_tests.rs"]
 mod icon_tests;
+#[cfg(test)]
+#[path = "../tests/unit/shader_sync_tests.rs"]
+mod shader_sync_tests;
