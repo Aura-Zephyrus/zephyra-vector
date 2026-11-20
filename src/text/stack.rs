@@ -24,8 +24,8 @@ use super::{
     atlas::AtlasRaster,
     line_break_opportunities,
     sdf::{from_coverage, sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD},
-    FontMetrics, GlyphAtlas, GlyphSource, Line, PlacedGlyph, ShapedText, TextAlign, TextRender,
-    TextStyle,
+    FontMetrics, GlyphAtlas, GlyphSource, Line, PlacedGlyph, ShapedText, TextAlign, TextDecorationMode,
+    TextDecorationStyle, TextRender, TextStyle,
 };
 
 /// 默认行高倍数。字体自带值缺失时用它。
@@ -75,6 +75,70 @@ pub fn resolved_line_height(
     }
 }
 
+
+/// 往 `quads` 追加一段装饰线，按样式拆成若干 RECT 四边形。
+///
+/// 顶点布局没有旋转字段，所以 Wavy 用一串**重叠的轴对齐小矩形**沿正弦阶梯排列
+/// 来近似；Solid/Double 是最常见路径，Dotted/Dashed 按线宽取节奏。
+fn push_decoration(
+    quads: &mut Vec<GlyphQuad>,
+    x0: f32,
+    x1: f32,
+    y: f32,
+    thickness: f32,
+    style: TextDecorationStyle,
+) {
+    let mut push = |a: f32, b: f32, yy: f32| {
+        if b <= a {
+            return;
+        }
+        quads.push(GlyphQuad {
+            uv: UvRect::FULL,
+            dst: Rect::new(a, yy - thickness * 0.5, b - a, thickness),
+            color_glyph: false,
+            // RECT 分支不读 mask，填一个合法值即可。
+            mask: GlyphMask::Coverage,
+            kind: crate::render::quad::kind::RECT,
+        });
+    };
+    match style {
+        TextDecorationStyle::Solid => push(x0, x1, y),
+        TextDecorationStyle::Double => {
+            push(x0, x1, y - thickness);
+            push(x0, x1, y + thickness);
+        }
+        TextDecorationStyle::Dotted => {
+            let d = thickness.max(1.0);
+            let step = d * 2.0;
+            let mut x = x0;
+            while x < x1 {
+                push(x, (x + d).min(x1), y);
+                x += step;
+            }
+        }
+        TextDecorationStyle::Dashed => {
+            let dash = (thickness * 3.0).max(2.0);
+            let gap = dash * 0.7;
+            let mut x = x0;
+            while x < x1 {
+                push(x, (x + dash).min(x1), y);
+                x += dash + gap;
+            }
+        }
+        TextDecorationStyle::Wavy => {
+            let step = (thickness * 1.5).max(2.0);
+            let amp = thickness * 0.8;
+            let mut x = x0;
+            let mut i = 0usize;
+            while x < x1 {
+                let nx = (x + step * 1.4).min(x1);
+                push(x, nx, y + amp * ((i as f32) * 0.9).sin());
+                x = nx;
+                i += 1;
+            }
+        }
+    }
+}
 
 /// 文本栈：把字符流变成可绘制的字形。
 pub struct TextStack<S: GlyphSource> {
@@ -605,7 +669,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
             // 装饰线的默认粗细/位置取自字体真实度量（Skia 的 underline/strikeout
             // metrics）；拿不到时才退回"字号 × 百分比"的经验值。
             let metrics = self.source.metrics(display_px);
-            let thickness = style
+            let base_thickness = style
                 .decoration_thickness
                 .unwrap_or_else(|| {
                     metrics
@@ -620,6 +684,8 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                         .unwrap_or(display_px * 0.06)
                 })
                 .max(0.5);
+            let thickness =
+                (base_thickness * style.decoration_thickness_multiplier.max(0.05)).max(0.25);
             let underline_offset = style
                 .decoration_offset
                 .unwrap_or_else(|| {
@@ -666,14 +732,49 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                     ys.push(baseline_y - display_px * 0.78);
                 }
                 for y in ys {
-                    quads.push(GlyphQuad {
-                        uv: UvRect::FULL,
-                        dst: Rect::new(origin.x + x0, y - thickness * 0.5, x1 - x0, thickness),
-                        color_glyph: false,
-                        // RECT 分支不读 mask，填一个合法值即可。
-                        mask: GlyphMask::Coverage,
-                        kind: crate::render::quad::kind::RECT,
-                    });
+                    // kGaps：在墨迹穿过装饰线的字形处留缺口（Skia 的
+                    // TextDecorationMode::kGaps / CSS text-decoration-skip-ink）。
+                    let mut segments = vec![(x0, x1)];
+                    if style.decoration_mode == TextDecorationMode::Gaps {
+                        let mut gaps = Vec::new();
+                        for g in &line.glyphs {
+                            let Some(entry) = self.atlas.get(g.font_id, g.glyph_id, px) else {
+                                continue;
+                            };
+                            let sc = display_px / entry.base_px.max(1.0);
+                            let ink_top = baseline_y + entry.offset.y * sc;
+                            let ink_bottom = ink_top + entry.size.height * sc;
+                            if ink_top < y + thickness && ink_bottom > y - thickness {
+                                gaps.push((g.offset.x, g.offset.x + g.advance));
+                            }
+                        }
+                        for (ga, gb) in gaps {
+                            let mut next = Vec::new();
+                            for (a, b) in segments {
+                                if gb <= a || ga >= b {
+                                    next.push((a, b));
+                                } else {
+                                    if ga > a {
+                                        next.push((a, ga.min(b)));
+                                    }
+                                    if gb < b {
+                                        next.push((gb.max(a), b));
+                                    }
+                                }
+                            }
+                            segments = next;
+                        }
+                    }
+                    for (a, b) in segments {
+                        push_decoration(
+                            &mut quads,
+                            origin.x + a,
+                            origin.x + b,
+                            y,
+                            thickness,
+                            style.decoration_style,
+                        );
+                    }
                 }
             }
         }

@@ -40,11 +40,10 @@
 - [ ] 主仓可能需要同步：若 main 依赖默认行高 1.2 的布局断言，cargo update 后要调整（B1 时验证）
 
 ### A2 — OpenType features + word-spacing（第一档，整形层）
-- [ ] `TextStyle` 加 `font_features: Vec<(u32,u32)>`、`word_spacing: f32`
-- [ ] 透传链路：`TextStyle → TextEngine::shape → TextStack::shape → GlyphSource::shape → ab_glyph_source.rs` → rustybuzz `Feature`/`ShapePlan`
-- [ ] word-spacing 按空格字素簇追加，与 `letter_spacing` cluster 逻辑（`stack.rs:236`）共用；`advance()` 测量路径同步
-- [ ] `FontSet` 逐字体分段各自应用 features
-- [ ] 测试 + commit
+- [x] `TextStyle` 加 `font_features: Vec<(u32,u32)>`、`word_spacing: f32`
+- [x] 透传：`AbGlyphSource::shape_run` 加 user_features 参数，用户同 tag 覆盖默认（liga/kern/mark…）；`FontSet::push_segment` 同步
+- [x] word-spacing 按空格字素簇追加；顺带修正 letter_spacing 未计入 `pen`（行宽/对齐）的旧问题
+- [x] 测试 `tests/unit/text/features_tests.rs`（4 条）；全量 340 passed，commit `d944b32`
 
 ### A3 — 装饰线样式（第一档，依赖 A1 度量默认值）
 - [ ] `TextDecorationStyle` 枚举（Solid/Dotted/Dashed/Wavy）+ `TextStyle::decoration_style`

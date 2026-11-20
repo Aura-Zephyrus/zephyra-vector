@@ -87,6 +87,9 @@ mod metrics_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/text/features_tests.rs"]
 mod features_tests;
+#[cfg(test)]
+#[path = "../../tests/unit/text/decoration_tests.rs"]
+mod decoration_tests;
 
 pub use atlas::{
     AtlasGlyph, AtlasRaster, AtlasStats, EntryInfo, EvictPlan, EvictionPolicy, GlyphAtlas,
@@ -209,6 +212,31 @@ impl TextDecoration {
     }
 }
 
+/// 装饰线样式，对应 Skia `SkParagraph` 的 `TextDecorationStyle`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextDecorationStyle {
+    #[default]
+    Solid,
+    /// 双线（在基准位置上下各偏一个线宽）。
+    Double,
+    /// 点线。
+    Dotted,
+    /// 虚线。
+    Dashed,
+    /// 波浪线（用一串重叠小矩形近似正弦）。
+    Wavy,
+}
+
+/// 装饰线遇到字形墨迹时的行为，对应 Skia `TextDecorationMode`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextDecorationMode {
+    /// 直线穿过字形（默认，与 CSS `text-decoration-skip-ink: none` 一致）。
+    #[default]
+    Through,
+    /// 在穿过线的字形处留缺口（Skia `kGaps`，CSS `skip-ink`）。
+    Gaps,
+}
+
 /// 段落基准方向。`Auto` 由 Unicode BiDi 算法根据首个强方向字符推断。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextDirection {
@@ -309,8 +337,14 @@ pub struct TextStyle {
     pub direction: TextDirection,
     /// 装饰线；位置相对基线，宽度取该行字形的实际跨度。
     pub decoration: TextDecoration,
-    /// 装饰线粗细（DIP）；`None` 取显示字号的 6%。
+    /// 装饰线的视觉样式。
+    pub decoration_style: TextDecorationStyle,
+    /// 装饰线与字形墨迹相交时的处理（穿过 / 留缺口）。
+    pub decoration_mode: TextDecorationMode,
+    /// 装饰线粗细（DIP）；`None` 取字体建议值或显示字号的 6%。
     pub decoration_thickness: Option<f32>,
+    /// 装饰线粗细的倍率（Skia `fThicknessMultiplier`）。
+    pub decoration_thickness_multiplier: f32,
     /// 下划线在基线**下方**的偏移（DIP）；`None` 取显示字号的 12%。
     pub decoration_offset: Option<f32>,
     /// 伪粗体阈值覆盖（SDF 值域）；`None` 用回退链按字重算出的值。
@@ -341,7 +375,10 @@ impl Default for TextStyle {
             scale: 1.0,
             direction: TextDirection::Auto,
             decoration: TextDecoration::default(),
+            decoration_style: TextDecorationStyle::default(),
+            decoration_mode: TextDecorationMode::default(),
             decoration_thickness: None,
+            decoration_thickness_multiplier: 1.0,
             decoration_offset: None,
             embolden: None,
             lcd: None,
