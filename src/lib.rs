@@ -47,5 +47,14 @@ mod geom_tests;
 #[path = "../tests/unit/icon_tests.rs"]
 mod icon_tests;
 #[cfg(test)]
+#[path = "../tests/unit/migrated_geometry_tests.rs"]
+mod migrated_geometry_tests;
+#[cfg(test)]
+#[path = "../tests/unit/migrated_glyph_atlas_bmp.rs"]
+mod migrated_glyph_atlas_bmp;
+#[cfg(test)]
+#[path = "../tests/unit/migrated_text_roundtrip.rs"]
+mod migrated_text_roundtrip;
+#[cfg(test)]
 #[path = "../tests/unit/shader_sync_tests.rs"]
 mod shader_sync_tests;
