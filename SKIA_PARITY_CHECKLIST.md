@@ -79,25 +79,24 @@
 ## 批次 B：主仓（vector push 之后）
 
 ### B1 — 适配新 TextStyle
-- [ ] `cargo update -p zephyra-vector`（主仓）
-- [ ] `zephyra-core/src/style.rs` 构造 TextStyle 处补新字段（`..Default::default()`）
-- [ ] 确认 `node.rs`/`paint.rs` 缓存指纹未被破坏（TextStyle 派生 PartialEq，新字段自动进指纹）
-- [ ] `cargo test -p zephyra-core` + `cargo check --workspace --tests`
+- [x] 主仓 `cargo update -p zephyra-vector` → `#81fb9f6a`
+- [x] `style.rs` 用 `..Default::default()` 自动获得新字段；`line_height` 未设置时改给 `None`，让字体真实度量生效
+- [x] `cargo test -p zephyra-core` 全绿、`cargo check --workspace --tests` 通过；commit `e252c69`
 
 ### B2 — 逐通道 LCD 混合（第二档，最后，跨仓）
-- [ ] 先读 Skia `src/gpu/ganesh/text/` 确认 GPU LCD 实际路径
-- [ ] 方案二选一（都做能力检测 + 回退当前近似，老设备不能黑屏）：
-  - 双源混合：片元 `SV_Target0=text·mask`、`SV_Target1=mask`，blend `ONE/INV_SRC1_COLOR`（需 SM5.1+/D3D11.3，核实 fxc 与目标设备；Vulkan 原生支持）
-  - 两遍法：第一遍 `ZERO/INV_SRC_COLOR` 挖空 dst，第二遍 `ONE/ONE` 加 `text·mask`（通用，两次 draw）
-- [ ] 影响面：`shaders/hlsl/shade.hlsli`、`shaders/wgsl/10_shade.wgsl.part`、DXBC 重编 + fxc 字节门禁、`zephyra-fx::shaders` 常量、D3D11/D3D12/Vulkan/winit 四处 blend state、`LcdOrder` RGB/BGR 顺序
-- [ ] `TextStyle::lcd` 默认保持 None（opt-in）
-- [ ] 测试 + fxc 门禁 + commit
+- [x] 读 Skia `src/gpu/ganesh/text/` 与 msdfgen 参考
+- [x] **采用方案：shader 内逐通道覆盖率**（不换 blend 状态、不升 SM5.1）：
+  - LCD 分支取三次 MSDF 样本得 `cov.rgb`，直接乘进源颜色；`alpha = max(cov)` 供 SrcOver 决定背景让位；
+  - 修正原先 `out_rgb * coverage` 把逐通道覆盖率又乘一次标量均值的错误；
+  - HLSL/WGSL 同步修改，25 个 DXBC 全部重编，fxc 字节一致门禁通过。
+- [x] 说明：这是"逐通道源覆盖"，不是 GPU 双源混合那种逐通道 dst 系数；但对三条子像素分别着色，已明显优于均值近似，且零后端改动、无设备兼容风险。
+- [x] `TextStyle::lcd` 默认 None（opt-in）；commit `81fb9f6`（vector）
 
 ### B3 — 验证与收尾
-- [ ] vector：`cargo test`（基线 333 passed / 1 ignored 全绿）+ fxc/shader 同步门禁
-- [ ] main：`cargo test -p zephyra-core` + `cargo check --workspace --tests`
-- [ ] 全部文件 LF 行尾确认
-- [ ] vector / main 分别 commit + push
+- [x] vector：`cargo test` 352 passed / 0 failed / 1 ignored；fxc/shader 同步门禁通过
+- [x] main：`cargo test -p zephyra-core` 全绿；`cargo check --workspace --tests` 通过；`cargo test --workspace` 83 个 test result 全 ok
+- [x] LF 行尾确认（新增文件均 LF）
+- [x] vector push 成功（`81fb9f6`）；main 待 push
 - [ ] 可选：Viewstage-Rust `cargo update -p zephyra-vector` 后重编截图设置页，确认无串位复发、新装饰线/省略号/彩色 emoji 正常
 
 ## 明确不做（本轮）
