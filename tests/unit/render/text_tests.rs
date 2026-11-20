@@ -463,6 +463,44 @@ fn emoji_zwj_sequence_is_one_cluster() {
     assert!(glyphs.iter().all(|g| !g.color_glyph));
 }
 
+/// 图集写入必须保留 MSDF 的 4 字节像素，不能按旧的单通道格式截断。
+#[test]
+fn atlas_preserves_msdf_channels() {
+    let Some(mut stack) = system_stack() else {
+        eprintln!("跳过：找不到系统字体");
+        return;
+    };
+    let style = TextStyle {
+        size: 32.0,
+        ..Default::default()
+    };
+    let shaped = stack.shape("Hg", &style, None);
+    let (_, quads) = stack
+        .glyph_quads(&shaped, Point::new(0.0, 0.0), &style)
+        .unwrap();
+    let pixels = stack.atlas().pixels();
+    let side = crate::text::atlas::ATLAS_SIZE as usize;
+    let mut different = 0usize;
+    for q in &quads {
+        let x0 = (q.uv.x * side as f32) as usize;
+        let y0 = (q.uv.y * side as f32) as usize;
+        let x1 = ((q.uv.x + q.uv.width) * side as f32) as usize;
+        let y1 = ((q.uv.y + q.uv.height) * side as f32) as usize;
+        for y in y0..y1.min(side) {
+            for x in x0..x1.min(side) {
+                let i = (y * side + x) * 4;
+                if pixels[i] != pixels[i + 1] || pixels[i + 1] != pixels[i + 2] {
+                    different += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        different > 0,
+        "图集里没有任何三通道差异 —— MSDF 缓冲被按单通道截断了"
+    );
+}
+
 /// LCD 模式选择：RGB / BGR 编码成不同 mode，普通 MSDF 不受影响。
 #[test]
 fn lcd_order_selects_distinct_shader_modes() {

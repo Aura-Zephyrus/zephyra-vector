@@ -610,24 +610,35 @@ impl GlyphAtlas {
     /// 外侧"，是距离场的有效值，`smoothstep` 需要它。相邻字形不会互相覆盖 ——
     /// shelf 分配的是互不重叠的 padded 矩形。
     fn write_sdf(&mut self, x: u32, y: u32, width: u32, height: u32, sdf: &[u8]) {
-        let src_w = (sdf.len() / height.max(1) as usize).min(width as usize);
+        // 两种像素格式：
+        // - 1 字节/像素：旧单通道 SDF（替身来源仍用它），复制到四个通道；
+        // - 4 字节/像素：MSDF（RGB = 三通道距离，A = 真实 SDF 灰度副本）。
+        // ⚠ 曾按死 1 字节/像素，于是 MSDF 每行的后 3/4 被截掉 —— 图集里只剩
+        // 左四分之一的字形，症状是"文字显示成一竖条"。
+        let px = (width as usize).max(1) * (height as usize).max(1);
+        let channels = if sdf.len() >= px * 4 { 4 } else { 1 };
+        let src_w = (sdf.len() / (height.max(1) as usize * channels)).min(width as usize);
         for sy in 0..height {
             for sx in 0..src_w {
-                let v = sdf[sy as usize * src_w + sx];
+                let si = (sy as usize * src_w + sx) * channels;
                 let dx = x + sx as u32;
                 let dy = y + sy;
-                if dx >= self.side || dy >= self.side {
+                if dx >= self.side || dy >= self.side || si + channels > sdf.len() {
                     continue;
                 }
                 let dst = (dy as usize * self.side as usize + dx as usize) * RGBA;
                 if dst + RGBA > self.pixels.len() {
                     continue;
                 }
-                // 四个通道都写：着色器从 red 取距离，留灰度副本便于把图集当图片看。
-                self.pixels[dst] = v;
-                self.pixels[dst + 1] = v;
-                self.pixels[dst + 2] = v;
-                self.pixels[dst + 3] = v;
+                if channels == 4 {
+                    self.pixels[dst..dst + RGBA].copy_from_slice(&sdf[si..si + RGBA]);
+                } else {
+                    let v = sdf[si];
+                    self.pixels[dst] = v;
+                    self.pixels[dst + 1] = v;
+                    self.pixels[dst + 2] = v;
+                    self.pixels[dst + 3] = v;
+                }
             }
         }
     }
