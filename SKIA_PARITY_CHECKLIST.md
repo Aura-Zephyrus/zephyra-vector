@@ -46,10 +46,10 @@
 - [x] 测试 `tests/unit/text/features_tests.rs`（4 条）；全量 340 passed，commit `d944b32`
 
 ### A3 — 装饰线样式（第一档，依赖 A1 度量默认值）
-- [ ] `TextDecorationStyle` 枚举（Solid/Dotted/Dashed/Wavy）+ `TextStyle::decoration_style`
-- [ ] `stack.rs:555-583` quad 生成：Dotted/Dashed 拆多段小矩形；Wavy 用一串小矩形近似正弦；走 `render/quad.rs` RECT 路径，不动顶点布局
-- [ ] stretch：underline 跟随字形几何（用 quad 包围盒在穿过下划线的字处留缺口），单独 commit
-- [ ] 测试 + commit
+- [x] 按 Skia `TextStyle.h`：`TextDecorationStyle`（Solid/Double/Dotted/Dashed/Wavy）+ `TextDecorationMode`（Through/Gaps）+ `decoration_thickness_multiplier`
+- [x] `stack.rs::push_decoration`：Dotted/Dashed 多段小矩形；Wavy 一串重叠小矩形近似正弦；走 RECT 路径，不动顶点布局
+- [x] kGaps：用图集字形墨迹盒在穿过线的字处挖缺口（Skia `kGaps` / CSS skip-ink）
+- [x] 测试 `tests/unit/text/decoration_tests.rs`（3 条）；全量 343 passed，commit `f3c709e`
 
 ### A4 — 文字阴影（第一档）
 - [ ] `TextStyle::shadow: Option<TextShadow>`（offset + color；blur 暂不做）

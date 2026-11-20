@@ -471,6 +471,11 @@ pub struct GlyphQuad {
     pub color_glyph: bool,
     /// 采样方式。取代原先的 `sdf: Option<f32>`。
     pub mask: GlyphMask,
+    /// 逐字形颜色覆盖；`None` 用 `Command::Text::color`（正文/装饰线默认色）。
+    ///
+    /// 文字阴影用它给副本一个独立颜色；这比给 `Command::Text` 加"阴影色再画一遍"
+    /// 更省一条命令，且阴影与正文天然共用同一张图集。
+    pub color: Option<Color>,
     /// 顶点类型。字形走 `GLYPH`；装饰线走 `RECT`（纯色 SDF，不采纹理）。
     ///
     /// 默认常量见 [`crate::render::quad::kind::GLYPH`]，直接写 1.0 是为了

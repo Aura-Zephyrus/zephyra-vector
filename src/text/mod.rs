@@ -53,7 +53,7 @@
 //! - `GlyphSource::advance` 仍是单字符接口（用于光标定位等场景）；完整排版请走
 //!   [`GlyphSource::shape`] 与 [`crate::text::TextEngine::shape`]。
 
-use crate::core::{Point, Rect, Size, UvRect};
+use crate::core::{Color, Point, Rect, Size, UvRect};
 use crate::paint::{GlyphMask, GlyphQuad, TextureRef};
 
 pub mod ab_glyph_source;
@@ -90,6 +90,9 @@ mod features_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/text/decoration_tests.rs"]
 mod decoration_tests;
+#[cfg(test)]
+#[path = "../../tests/unit/text/shadow_tests.rs"]
+mod shadow_tests;
 
 pub use atlas::{
     AtlasGlyph, AtlasRaster, AtlasStats, EntryInfo, EvictPlan, EvictionPolicy, GlyphAtlas,
@@ -299,6 +302,27 @@ pub struct StrutStyle {
     pub force: bool,
 }
 
+/// 文字阴影，对应 Skia `TextShadow`（`fColor` / `fOffset` / `fBlurSigma`）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextShadow {
+    /// 阴影色。
+    pub color: Color,
+    /// 阴影相对正文的偏移（DIP）。
+    pub offset: Point,
+    /// 模糊半径（DIP）；靠加宽 SDF 的 smoothstep 过渡带实现，无额外纹理。
+    pub blur_sigma: f32,
+}
+
+impl Default for TextShadow {
+    fn default() -> Self {
+        Self {
+            color: Color::rgba(0.0, 0.0, 0.0, 0.5),
+            offset: Point::new(1.0, 1.0),
+            blur_sigma: 0.0,
+        }
+    }
+}
+
 /// 文本样式。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextStyle {
@@ -349,6 +373,8 @@ pub struct TextStyle {
     pub decoration_offset: Option<f32>,
     /// 伪粗体阈值覆盖（SDF 值域）；`None` 用回退链按字重算出的值。
     pub embolden: Option<f32>,
+    /// 文字阴影；`None` 不画（默认）。
+    pub shadow: Option<TextShadow>,
     /// LCD 子像素排列；`None` 用普通灰度 MSDF。
     ///
     /// # 为什么默认关闭
@@ -381,6 +407,7 @@ impl Default for TextStyle {
             decoration_thickness_multiplier: 1.0,
             decoration_offset: None,
             embolden: None,
+            shadow: None,
             lcd: None,
         }
     }
@@ -726,6 +753,7 @@ pub fn quads_from_shaped(
                 color_glyph: g.color_glyph,
                 // 替身没有图集，走旧的覆盖率路径（uv 指向 (0,0) 那个像素）。
                 mask: GlyphMask::Coverage,
+                color: None,
                 kind: crate::render::quad::kind::GLYPH,
             });
         }

@@ -98,6 +98,7 @@ fn push_decoration(
             color_glyph: false,
             // RECT 分支不读 mask，填一个合法值即可。
             mask: GlyphMask::Coverage,
+            color: None,
             kind: crate::render::quad::kind::RECT,
         });
     };
@@ -656,9 +657,55 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                             embolden: style.embolden.unwrap_or(g.embolden),
                         },
                     },
+                    color: None,
                     kind: crate::render::quad::kind::GLYPH,
                 });
             }
+        }
+
+        // ---- 文字阴影：复制字形 quad、偏移 + 独立颜色，插在正文之前。----
+        //
+        // 模糊不额外做高斯卷积：SDF 的 smoothstep 过渡带本身就是"软边"，加宽
+        // `w` 就等价于模糊，且 `w` 与屏幕像素的关系在排版端已经算好
+        // （`w = AA_BAND / (2·spread·scale)`），所以 `blur_w = blur·w / AA_BAND`
+        // 对任意字号都给出统一的屏幕空间模糊量。
+        if let Some(shadow) = style.shadow {
+            let mut with_shadow = Vec::with_capacity(quads.len() * 2);
+            for q in &quads {
+                if q.kind != crate::render::quad::kind::GLYPH {
+                    continue;
+                }
+                let mut s = *q;
+                s.dst = Rect::new(
+                    q.dst.x + shadow.offset.x,
+                    q.dst.y + shadow.offset.y,
+                    q.dst.width,
+                    q.dst.height,
+                );
+                s.color = Some(shadow.color);
+                if shadow.blur_sigma > 0.0 {
+                    let extra = (shadow.blur_sigma * q.mask.w() / crate::render::quad::AA_BAND)
+                        .min(0.25);
+                    if extra > 0.0 {
+                        s.mask = match q.mask {
+                            GlyphMask::Sdf { w } => GlyphMask::Sdf { w: w + extra },
+                            GlyphMask::Msdf { w, embolden } => GlyphMask::Msdf {
+                                w: w + extra,
+                                embolden,
+                            },
+                            GlyphMask::LcdMsdf { w, embolden, order } => GlyphMask::LcdMsdf {
+                                w: w + extra,
+                                embolden,
+                                order,
+                            },
+                            GlyphMask::Coverage => GlyphMask::Coverage,
+                        };
+                    }
+                }
+                with_shadow.push(s);
+            }
+            with_shadow.append(&mut quads);
+            quads = with_shadow;
         }
 
         // ---- 装饰线：按每行**实际字形跨度**追加纯色矩形。----

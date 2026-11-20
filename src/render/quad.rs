@@ -1674,7 +1674,7 @@ pub fn expand_range_translated_into(
                 if color.a <= 0.0 || glyphs.is_empty() {
                     continue;
                 }
-                let rgba = [color.r, color.g, color.b, color.a];
+                let default_rgba = [color.r, color.g, color.b, color.a];
                 let solid_before = out.solid.len();
                 // ⚠ 字形的 `dst` 是**局部坐标**（原点 = 元素原点，见
                 // `Command::Text::glyphs`），所以这里要把「元素原点」和
@@ -1727,6 +1727,11 @@ pub fn expand_range_translated_into(
                             )
                         }
                     };
+                    // 逐字形颜色覆盖（文字阴影的副本用它拿独立颜色/透明度）；
+                    // None 时沿用 Command::Text 的唯一文字色。
+                    let rgba = g
+                        .color
+                        .map_or(default_rgba, |c| [c.r, c.g, c.b, c.a]);
                     if (g.kind - kind::GLYPH).abs() < 0.01 {
                         out.solid.extend_from_slice(&Vertex::from_glyph_rect(
                             rect, px, rgba, uv, g.mask,
