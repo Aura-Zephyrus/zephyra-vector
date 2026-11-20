@@ -61,6 +61,16 @@ use crate::text::{AtlasRaster, FontMetrics, GlyphSource, TextStack, TextStyle};
 use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont};
 use rustybuzz::ttf_parser::Tag;
 
+/// 四字节 OpenType tag 的两种表示（用户 API 用 u32，rustybuzz 用 `[u8; 4]`）。
+fn feature_tag_bytes(name: &str) -> [u8; 4] {
+    let b = name.as_bytes();
+    [b[0], b[1], b[2], b[3]]
+}
+
+fn feature_tag(name: &str) -> u32 {
+    u32::from_be_bytes(feature_tag_bytes(name))
+}
+
 /// 基于 ab_glyph 的字形来源。
 ///
 /// 只做三件事：查字形 id、算步进、栅格化。三者都是 `ab_glyph` 的直接映射 —— 这里
@@ -146,6 +156,7 @@ impl AbGlyphSource {
         rtl: bool,
         px_size: f32,
         scale: f32,
+        user_features: &[(u32, u32)],
     ) -> ShapedRun {
         let script = dominant_script(run_text);
         let face = match rustybuzz::Face::from_slice(self.font.as_slice(), 0) {
@@ -176,17 +187,18 @@ impl AbGlyphSource {
         };
 
         // 显式打开常用特性：连字、上下文替代、字距对、mark 定位。
-        // 字体里没有的表会被 rustybuzz 安全忽略。
-        let features: Vec<rustybuzz::Feature> = [
+        // 字体里没有的表会被 rustybuzz 安全忽略。用户给的同 tag 项覆盖默认值
+        // （值 0 即关闭）；这与 Skia 的 feature settings 合并规则一致。
+        let mut features: Vec<rustybuzz::Feature> = [
             "liga", "clig", "calt", "ccmp", "kern", "mark", "mkmk", "locl",
         ]
         .iter()
-        .map(|tag| {
-            let mut b = [0u8; 4];
-            b.copy_from_slice(tag.as_bytes());
-            rustybuzz::Feature::new(Tag::from_bytes(&b), 1, ..)
-        })
+        .filter(|name| !user_features.iter().any(|(t, _)| *t == feature_tag(name)))
+        .map(|tag| rustybuzz::Feature::new(Tag::from_bytes(&feature_tag_bytes(tag)), 1, ..))
         .collect();
+        for &(tag, value) in user_features {
+            features.push(rustybuzz::Feature::new(Tag::from_bytes(&tag.to_be_bytes()), value, ..));
+        }
 
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         // cluster 用**字节偏移**，这样 letter_spacing 能按字素簇追加。
@@ -550,7 +562,7 @@ impl GlyphSource for AbGlyphSource {
         let mut out = Vec::new();
         for (range, rtl) in bidi_runs(text, style.direction) {
             let run_text = &text[range.clone()];
-            let mut shaped = self.shape_run(run_text, rtl, px_size, scale);
+            let mut shaped = self.shape_run(run_text, rtl, px_size, scale, &style.font_features);
             // `shape_run` 的 cluster 是 run 内字节偏移；下游按整段文本解释它们
             // （字间距去重、装饰线跨度都以整行字节为基准）。
             for g in &mut shaped.glyphs {

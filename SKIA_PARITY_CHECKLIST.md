@@ -32,12 +32,12 @@
 ## 批次 A：vector 仓（按序，每步一个 commit + 测试）
 
 ### A1 — 真实字体度量 / StrutStyle（第二档，先做）
-- [ ] `src/text/mod.rs` 新增 `FontMetrics`（ascent/descent/leading/x_height/cap_height/underline_thickness/underline_position）与 `StrutStyle`（可覆盖 ascent/descent/leading + force）
-- [ ] `GlyphSource` trait 加 `fn metrics(&self, px_size: f32) -> Option<FontMetrics>`（默认实现，保护测试替身）
-- [ ] `AbGlyphSource` 从 ab_glyph 的 hhea/OS2 读真实值；`FontSet` 按回退链首字体取
-- [ ] `stack.rs` 行高改为 `ascent − descent + leading`（读不到回退 1.2）；基线、装饰线默认厚度/偏移改用度量
-- [ ] ⚠️ 行为变化：默认行高会变，同步更新依赖 1.2 的测试断言
-- [ ] `cargo test` 全绿，commit
+- [x] `src/text/mod.rs` 新增 `FontMetrics`（ascent/descent/leading/x_height/cap_height/underline_thickness/underline_position + strikethrough）与 `StrutStyle`（可覆盖 ascent/descent/leading + force）
+- [x] `GlyphSource` trait 加 `fn metrics(&self, px_size: f32) -> Option<FontMetrics>`（默认实现，保护测试替身）
+- [x] `AbGlyphSource` 从 hhea + ttf-parser 的 x_height/capital_height/underline/strikeout 表读真实值；`FontSet` 用首字体
+- [x] `stack.rs` 新增 `resolved_line_height()`：显式倍数 > strut > 真实度量 > 1.2×字号；装饰线默认厚度/位置改用度量
+- [x] 测试 `tests/unit/text/metrics_tests.rs`（3 条）；全量 336 passed（333+3），commit `b368c44`
+- [ ] 主仓可能需要同步：若 main 依赖默认行高 1.2 的布局断言，cargo update 后要调整（B1 时验证）
 
 ### A2 — OpenType features + word-spacing（第一档，整形层）
 - [ ] `TextStyle` 加 `font_features: Vec<(u32,u32)>`、`word_spacing: f32`

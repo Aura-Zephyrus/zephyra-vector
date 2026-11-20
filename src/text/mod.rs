@@ -84,6 +84,9 @@ mod atlas_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/text/metrics_tests.rs"]
 mod metrics_tests;
+#[cfg(test)]
+#[path = "../../tests/unit/text/features_tests.rs"]
+mod features_tests;
 
 pub use atlas::{
     AtlasGlyph, AtlasRaster, AtlasStats, EntryInfo, EvictPlan, EvictionPolicy, GlyphAtlas,
@@ -285,6 +288,15 @@ pub struct TextStyle {
     ///
     /// 对应 CSS `letter-spacing`。`0.0` 表示不加间距。
     pub letter_spacing: f32,
+    /// 词间距（DIP，每个空白字素簇追加的额外间距，可为负）。
+    ///
+    /// 对应 CSS `word-spacing`，与 [`Self::letter_spacing`] 叠加。
+    pub word_spacing: f32,
+    /// OpenType 特性开关：`(四字节 tag, 值)`，如 `('t'<<24|'n'<<16|'u'<<8|'m', 1)` 开表格数字。
+    ///
+    /// 对应 Skia `SkShaper::Feature`。字体默认开启的特性（liga/kern/mark 等）
+    /// 会被用户同 tag 的项覆盖，值 0 即关闭。
+    pub font_features: Vec<(u32, u32)>,
     /// 水平对齐方式。
     pub text_align: TextAlign,
     /// 段间距（DIP，行与行之间的额外间隙，可为负）。
@@ -322,6 +334,8 @@ impl Default for TextStyle {
             line_height: None,
             strut: None,
             letter_spacing: 0.0,
+            word_spacing: 0.0,
+            font_features: Vec::new(),
             text_align: TextAlign::Left,
             paragraph_spacing: 0.0,
             scale: 1.0,

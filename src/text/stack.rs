@@ -210,7 +210,9 @@ impl<S: GlyphSource> TextStack<S> {
                         // 多字体回退时宽度必须按"最终会用的那份字体"算，否则换行
                         // 决策与实际排出的字形步进不一致。
                         let (font_id, id) = self.source.glyph_in(ch, style);
-                        self.source.advance_in(font_id, id, px_size) + style.letter_spacing
+                        self.source.advance_in(font_id, id, px_size)
+                            + style.letter_spacing
+                            + if ch.is_whitespace() { style.word_spacing } else { 0.0 }
                     })
                     .sum();
                 cluster_widths.push(width);
@@ -281,6 +283,7 @@ impl<S: GlyphSource> TextStack<S> {
                         // 字间距按字素簇而不是按字形：连字合成的多个字符只算一次。
                         let spacing = if seen_clusters.insert(g.cluster.start) {
                             style.letter_spacing
+                                + if is_space { style.word_spacing } else { 0.0 }
                         } else {
                             0.0
                         };
@@ -294,7 +297,8 @@ impl<S: GlyphSource> TextStack<S> {
                             embolden: g.embolden,
                         });
                         break_after.push(is_space);
-                        pen += g.advance;
+                        // 间距计入行宽：否则对齐与断行用的宽度与实际字形跨度不一致。
+                        pen += g.advance + spacing;
                     }
                 }
 
@@ -416,7 +420,9 @@ impl<S: GlyphSource> super::TextEngine for TextStack<S> {
             return 0.0;
         }
         let id = self.source.glyph_id(ch);
-        self.source.advance(id, style.effective_size().max(1.0)) + style.letter_spacing
+        self.source.advance(id, style.effective_size().max(1.0))
+            + style.letter_spacing
+            + if ch.is_whitespace() { style.word_spacing } else { 0.0 }
     }
 
     fn line_height(&mut self, style: &TextStyle) -> f32 {

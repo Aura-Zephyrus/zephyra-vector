@@ -184,7 +184,7 @@ impl FontSet {
         let slot = &mut self.fonts[fidx];
         let mut shaped = slot
             .source
-            .shape_run(&text[start..end], rtl, px_size, scale);
+            .shape_run(&text[start..end], rtl, px_size, scale, &style.font_features);
         for g in &mut shaped.glyphs {
             // `shape_run` 的 cluster 是段内字节偏移；回退链的分析基于整段文本。
             g.cluster.start += start;
