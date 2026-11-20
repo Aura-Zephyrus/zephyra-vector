@@ -57,6 +57,7 @@ use crate::paint::{GlyphMask, GlyphQuad, TextureRef};
 pub mod ab_glyph_source;
 pub mod atlas;
 pub mod fontset;
+pub mod msdf;
 pub mod sdf;
 pub mod shape;
 pub mod stack;

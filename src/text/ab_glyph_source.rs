@@ -54,7 +54,8 @@
 //! 跳过 —— **图集全空，屏幕上字完全不出现**。见 `zephyra/src/text/atlas.rs` 里的修正，
 //! 以及 `zephyra/src/text/atlas_tests.rs` 里用假字形来源钉死的契约测试。
 use crate::core::Point;
-use crate::text::sdf::{from_coverage, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD};
+use crate::text::msdf::outline_segments;
+use crate::text::sdf::{SDF_BASE_PX, SDF_PADDING, SDF_SPREAD};
 use crate::text::shape::{bidi_runs, dominant_script, rustybuzz_script, ShapedGlyph, ShapedRun};
 use crate::text::{AtlasRaster, GlyphSource, TextStack, TextStyle};
 use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont};
@@ -474,6 +475,17 @@ impl GlyphSource for AbGlyphSource {
             coverage[ay * w as usize + ax] = v;
         });
 
+        // 轮廓线段（供 MSDF 用）：ttf_parser 的字体单位 → 像素用 px/upem，
+        // 这正是 ab_glyph 内部的水平缩放因子；origin 用它的 px_bounds.min 对齐。
+        let px_per_unit = px / self.units_per_em();
+        let segments = outline_segments(
+            self.font.as_slice(),
+            id.0,
+            px_per_unit,
+            (bounds.min.x, bounds.min.y),
+        );
+        let mask = crate::text::msdf::generate(&coverage, w, h, SDF_PADDING, &segments);
+
         Some(AtlasRaster {
             // offset 是**屏幕方向**（y 向下）相对基线原点的偏移，基线之上为**负**。
             //
@@ -489,8 +501,9 @@ impl GlyphSource for AbGlyphSource {
             offset: Point::new(bounds.min.x.floor(), bounds.min.y.floor()),
             width: w,
             height: h,
-            // 覆盖率 → 有符号距离场；`from_coverage` 自带 SDF_PADDING 留白。
-            sdf: from_coverage(&coverage, w, h, SDF_PADDING),
+            // 三通道 MSDF（RGB）+ 真实 SDF 灰度副本（alpha）。
+            // 替身来源仍可只填灰度 SDF：三通道相等时 median 退化为单通道。
+            sdf: mask,
             spread: SDF_SPREAD,
             base_px: px,
         })

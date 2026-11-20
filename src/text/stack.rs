@@ -495,7 +495,12 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                         (entry.size.height + 2.0 * pad) * scale,
                     ),
                     color_glyph: g.color_glyph,
-                    mask: GlyphMask::Sdf { w },
+                    // 真实来源产出 MSDF；替身只填灰度 SDF，但三通道相等时
+                    // `median(r,g,b)` 退化为单通道，所以同一条 shader 路径通用。
+                    mask: GlyphMask::Msdf {
+                        w,
+                        embolden: g.embolden,
+                    },
                 });
             }
         }
