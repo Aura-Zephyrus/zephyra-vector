@@ -53,11 +53,14 @@
 //! `floor(offset.y)` 就是 cap 高度（32px 的 'H' 约 22），于是每个像素都被越界判断
 //! 跳过 —— **图集全空，屏幕上字完全不出现**。见 `zephyra/src/text/atlas.rs` 里的修正，
 //! 以及 `zephyra/src/text/atlas_tests.rs` 里用假字形来源钉死的契约测试。
+use std::collections::HashMap;
+
 use crate::core::Point;
+use crate::text::color::parse_color_layers;
 use crate::text::msdf::outline_segments;
 use crate::text::sdf::{SDF_BASE_PX, SDF_PADDING, SDF_SPREAD};
 use crate::text::shape::{bidi_runs, dominant_script, rustybuzz_script, ShapedGlyph, ShapedRun};
-use crate::text::{AtlasRaster, FontMetrics, GlyphSource, TextStack, TextStyle};
+use crate::text::{AtlasRaster, ColorLayer, FontMetrics, GlyphSource, TextStack, TextStyle};
 use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont};
 use rustybuzz::ttf_parser::Tag;
 
@@ -79,6 +82,8 @@ fn feature_tag(name: &str) -> u32 {
 pub struct AbGlyphSource {
     font: FontVec,
     font_id: u32,
+    /// COLR v0 彩色字形分层表，构造时解析一次（新字形才查询，稳态零成本）。
+    color_layers: HashMap<u32, Vec<ColorLayer>>,
 }
 
 impl AbGlyphSource {
@@ -91,7 +96,12 @@ impl AbGlyphSource {
     pub fn from_bytes(font_id: u32, bytes: &[u8]) -> Result<Self, String> {
         let font = FontVec::try_from_vec(bytes.to_vec())
             .map_err(|e| format!("字体解析失败（可能是 CFF/可变字体或文件已损坏）: {e}"))?;
-        Ok(Self { font, font_id })
+        let color_layers = parse_color_layers(bytes);
+        Ok(Self {
+            font,
+            font_id,
+            color_layers,
+        })
     }
 
     /// 原始字体字节（供回退链查询 cmap 覆盖、重建 rustybuzz face）。
@@ -330,6 +340,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
                 TextStack::disabled(AbGlyphSource {
                     font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
                     font_id: u32::MAX,
+                    color_layers: HashMap::new(),
                 }),
                 format!("字体 {path} 解析失败（{e}），已退回无文本模式"),
             ),
@@ -338,6 +349,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
             TextStack::disabled(AbGlyphSource {
                 font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
                 font_id: u32::MAX,
+                color_layers: HashMap::new(),
             }),
             format!("字体 {path} 是空文件，已退回无文本模式"),
         ),
@@ -345,6 +357,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
             TextStack::disabled(AbGlyphSource {
                 font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
                 font_id: u32::MAX,
+                color_layers: HashMap::new(),
             }),
             format!("读不到字体 {path}（{e}），已退回无文本模式"),
         ),
@@ -391,6 +404,7 @@ pub fn from_system_font() -> (TextStack<AbGlyphSource>, String) {
             // 占位字体：`font_id` 任意，因为 disabled 模式不产出任何字形。
             font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
             font_id: u32::MAX,
+            color_layers: HashMap::new(),
         }),
         format!(
             "未找到可用系统字体（试过 {} 个路径），已退回无文本模式",
@@ -432,6 +446,10 @@ impl GlyphSource for AbGlyphSource {
         self.font
             .as_scaled(scale)
             .h_advance(GlyphId(glyph_id.min(u16::MAX as u32) as u16))
+    }
+
+    fn color_layers(&self, glyph_id: u32) -> Option<&[ColorLayer]> {
+        self.color_layers.get(&glyph_id).map(|v| v.as_slice())
     }
 
     fn metrics(&self, px_size: f32) -> Option<FontMetrics> {

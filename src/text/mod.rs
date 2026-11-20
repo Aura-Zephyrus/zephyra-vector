@@ -58,6 +58,7 @@ use crate::paint::{GlyphMask, GlyphQuad, TextureRef};
 
 pub mod ab_glyph_source;
 pub mod atlas;
+pub mod color;
 pub mod fontset;
 pub mod msdf;
 pub mod sdf;
@@ -96,11 +97,15 @@ mod shadow_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/text/ellipsis_tests.rs"]
 mod ellipsis_tests;
+#[cfg(test)]
+#[path = "../../tests/unit/text/color_tests.rs"]
+mod color_tests;
 
 pub use atlas::{
     AtlasGlyph, AtlasRaster, AtlasStats, EntryInfo, EvictPlan, EvictionPolicy, GlyphAtlas,
     GlyphKey, LruEviction,
 };
+pub use color::ColorLayer;
 pub use stack::TextStack;
 
 /// 字形来源：把字符变成位图与步进。
@@ -152,6 +157,19 @@ pub trait GlyphSource {
     /// `(SDF_PADDING, SDF_PADDING)` 开始；`width`/`height` 是**墨迹**尺寸。
     /// `None` = 空白字形（空格、零宽字符）—— 它们没有位图，但**有**步进。
     fn rasterize(&mut self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster>;
+
+    /// 彩色字形（COLR v0）的分层；普通字形返回 `None`。
+    ///
+    /// 返回借用切片，避免每帧克隆；字体来源应在构造时解析并缓存这张表。
+    fn color_layers(&self, _glyph_id: u32) -> Option<&[crate::text::ColorLayer]> {
+        None
+    }
+
+    /// 指定字体下的彩色分层。默认忽略 `font_id`。
+    fn color_layers_in(&self, font_id: u32, glyph_id: u32) -> Option<&[crate::text::ColorLayer]> {
+        let _ = font_id;
+        self.color_layers(glyph_id)
+    }
 
     /// 字体在给定字号下的度量（DIP）。
     ///

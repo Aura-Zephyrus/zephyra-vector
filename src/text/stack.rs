@@ -17,7 +17,7 @@
 //!   └ GlyphAtlas（CPU 位图）    ──►   upload_atlas(pixels) 一次
 //! ```
 
-use crate::core::{Point, Rect, Size, UvRect};
+use crate::core::{Color, Point, Rect, Size, UvRect};
 use crate::paint::{GlyphMask, GlyphQuad, TextureRef};
 
 use super::{
@@ -139,6 +139,28 @@ fn push_decoration(
             }
         }
     }
+}
+
+/// 把一个字形放进图集；命中只 `touch`（刷新 LRU），不栅格化。
+fn ensure_glyph<S: GlyphSource>(
+    atlas: &mut GlyphAtlas,
+    source: &mut S,
+    font_id: u32,
+    glyph_id: u32,
+    px: u32,
+) {
+    if atlas.touch(font_id, glyph_id, px).is_some() {
+        return;
+    }
+    let r = source.rasterize_in(font_id, glyph_id, px).unwrap_or(AtlasRaster {
+        offset: Point::new(0.0, 0.0),
+        width: 0,
+        height: 0,
+        sdf: Vec::new(),
+        spread: SDF_SPREAD,
+        base_px: px as f32,
+    });
+    atlas.get_or_insert(font_id, glyph_id, px, Some(r));
 }
 
 /// 文本栈：把字符流变成可绘制的字形。
@@ -612,24 +634,22 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
         //
         // ⚠ 两条路径的**顺序不可交换**：命中缓存的也要走一趟（`touch`），否则上面
         // 那条"静止后连锁淘汰"的坑就回来了。
+        // 复用同一块缓冲收集"本字形要入图集的 glyph id"（彩色字形会展开成多层），
+        // 避免每字形每帧一次 Vec 分配 —— 稳态下这块容量一次分配后就不动了。
+        let mut glyph_scratch: Vec<u32> = Vec::new();
         for line in &shaped.lines {
             for g in &line.glyphs {
-                if self.atlas.touch(g.font_id, g.glyph_id, px).is_some() {
-                    // 已有位图：**跳过栅格化**，只刷新了 LRU 时间戳。
-                    continue;
+                glyph_scratch.clear();
+                // 彩色字形：每层是字体里的普通 glyph id，按自己的 key 入图集。
+                // 先复制 id 再借用 source：后面 `rasterize_in` 需要 `&mut source`。
+                if let Some(layers) = self.source.color_layers_in(g.font_id, g.glyph_id) {
+                    glyph_scratch.extend(layers.iter().map(|l| l.glyph_id));
+                } else {
+                    glyph_scratch.push(g.glyph_id);
                 }
-                let r = self
-                    .source
-                    .rasterize_in(g.font_id, g.glyph_id, px)
-                    .unwrap_or(AtlasRaster {
-                        offset: Point::new(0.0, 0.0),
-                        width: 0,
-                        height: 0,
-                        sdf: Vec::new(),
-                        spread: SDF_SPREAD,
-                        base_px: px as f32,
-                    });
-                self.atlas.get_or_insert(g.font_id, g.glyph_id, px, Some(r));
+                for &gid in &glyph_scratch {
+                    ensure_glyph(&mut self.atlas, &mut self.source, g.font_id, gid, px);
+                }
             }
         }
 
@@ -645,59 +665,69 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
         // 失效，而那条前提正是两趟写法成立的原因。
         let mut quads = Vec::new();
         for line in &shaped.lines {
+            let baseline_y = origin.y + line.baseline.y;
             for g in &line.glyphs {
-                let Some(entry) = self.atlas.get(g.font_id, g.glyph_id, px) else {
-                    // 淘汰掉了：多半是图集装不下这一帧的整个字符集。跳过而不是
-                    // 整段放弃 —— 部分文本可见远好于整段消失，且
-                    // `atlas_stats().evictions` 会暴露这件事。
-                    continue;
-                };
-                if entry.size.width <= 0.0 || entry.size.height <= 0.0 {
-                    continue;
-                }
                 let baseline_x = origin.x + g.offset.x;
-                let baseline_y = origin.y + line.baseline.y;
-                // 显示字号 / 基准字号 = SDF 到屏幕的缩放。offset、size 都按这个
-                // 比例放大；uv 覆盖**含留白**的整块，否则最外沿采不到过渡带。
-                let scale = display_px / entry.base_px;
-                let pad = SDF_PADDING as f32;
-                let uv = UvRect::new(
-                    (entry.uv.x - pad) * inv,
-                    (entry.uv.y - pad) * inv,
-                    (entry.size.width + 2.0 * pad) * inv,
-                    (entry.size.height + 2.0 * pad) * inv,
-                );
-                // `w` 是 smoothstep 在 SDF 值域上的过渡半宽：
-                // d_screen = (s - 0.5) · 2·spread·scale，令 d_screen = ±AA_BAND 即得。
-                let w = crate::render::quad::AA_BAND / (2.0 * entry.spread * scale);
-                quads.push(GlyphQuad {
-                    uv,
-                    // offset 是**屏幕方向**（y 向下）相对基线原点的偏移，基线之上为负。
-                    // 留白在墨迹之外，所以左上角要再往外推 pad。
-                    dst: Rect::new(
-                        baseline_x + (entry.offset.x - pad) * scale,
-                        baseline_y + (entry.offset.y - pad) * scale,
-                        (entry.size.width + 2.0 * pad) * scale,
-                        (entry.size.height + 2.0 * pad) * scale,
-                    ),
-                    color_glyph: g.color_glyph,
-                    // 真实来源产出 MSDF；替身只填灰度 SDF，但三通道相等时
-                    // `median(r,g,b)` 退化为单通道，所以同一条 shader 路径通用。
-                    // LCD 只是 MSDF 上的另一种采样方式，不另存一套位图。
-                    mask: match style.lcd {
-                        Some(order) => GlyphMask::LcdMsdf {
-                            w,
-                            embolden: style.embolden.unwrap_or(g.embolden),
-                            order,
+                // 一个字形可能是彩色字形（COLR），那时它展开成多层 quad；
+                // 每层就是一个普通 glyph id + 调色板颜色。
+                let mut emit = |gid: u32, color: Option<Color>, color_glyph: bool| {
+                    let Some(entry) = self.atlas.get(g.font_id, gid, px) else {
+                        // 淘汰掉了：多半是图集装不下这一帧的整个字符集。跳过而不是
+                        // 整段放弃 —— 部分文本可见远好于整段消失。
+                        return;
+                    };
+                    if entry.size.width <= 0.0 || entry.size.height <= 0.0 {
+                        return;
+                    }
+                    // 显示字号 / 基准字号 = SDF 到屏幕的缩放。offset、size 都按这个
+                    // 比例放大；uv 覆盖**含留白**的整块，否则最外沿采不到过渡带。
+                    let scale = display_px / entry.base_px;
+                    let pad = SDF_PADDING as f32;
+                    let uv = UvRect::new(
+                        (entry.uv.x - pad) * inv,
+                        (entry.uv.y - pad) * inv,
+                        (entry.size.width + 2.0 * pad) * inv,
+                        (entry.size.height + 2.0 * pad) * inv,
+                    );
+                    // `w` 是 smoothstep 在 SDF 值域上的过渡半宽：
+                    // d_screen = (s - 0.5) · 2·spread·scale，令 d_screen = ±AA_BAND 即得。
+                    let w = crate::render::quad::AA_BAND / (2.0 * entry.spread * scale);
+                    quads.push(GlyphQuad {
+                        uv,
+                        // offset 是**屏幕方向**（y 向下）相对基线原点的偏移，基线之上为负。
+                        // 留白在墨迹之外，所以左上角要再往外推 pad。
+                        dst: Rect::new(
+                            baseline_x + (entry.offset.x - pad) * scale,
+                            baseline_y + (entry.offset.y - pad) * scale,
+                            (entry.size.width + 2.0 * pad) * scale,
+                            (entry.size.height + 2.0 * pad) * scale,
+                        ),
+                        color_glyph,
+                        // 真实来源产出 MSDF；替身只填灰度 SDF，但三通道相等时
+                        // `median(r,g,b)` 退化为单通道，所以同一条 shader 路径通用。
+                        // LCD 只是 MSDF 上的另一种采样方式，不另存一套位图。
+                        mask: match style.lcd {
+                            Some(order) => GlyphMask::LcdMsdf {
+                                w,
+                                embolden: style.embolden.unwrap_or(g.embolden),
+                                order,
+                            },
+                            None => GlyphMask::Msdf {
+                                w,
+                                embolden: style.embolden.unwrap_or(g.embolden),
+                            },
                         },
-                        None => GlyphMask::Msdf {
-                            w,
-                            embolden: style.embolden.unwrap_or(g.embolden),
-                        },
-                    },
-                    color: None,
-                    kind: crate::render::quad::kind::GLYPH,
-                });
+                        color,
+                        kind: crate::render::quad::kind::GLYPH,
+                    });
+                };
+                if let Some(layers) = self.source.color_layers_in(g.font_id, g.glyph_id) {
+                    for l in layers {
+                        emit(l.glyph_id, Some(l.color), true);
+                    }
+                } else {
+                    emit(g.glyph_id, None, g.color_glyph);
+                }
             }
         }
 

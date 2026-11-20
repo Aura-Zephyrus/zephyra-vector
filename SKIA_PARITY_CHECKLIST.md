@@ -63,9 +63,10 @@
 - [ ] 注意：已有的 `ellipsize()` 单行字符串函数保留（不同用途）
 
 ### A6 — MSDF error correction（第二档）
-- [ ] `src/text/msdf.rs`：对产生中位数的边，用像素到该边的真实有符号距离替换该通道值
-- [ ] 断言：角点处 `median(r,g,b)` 与 coverage 推出的 SDF 一致
-- [ ] 测试 + commit
+- [x] 读 `E:\msdfgen\core\MSDFErrorCorrection.cpp`：其 apply 是把伪影纹素三通道压到中位值，保护颜色切换的拐角
+- [x] `msdf::error_correct`：检测相邻纹素"中位通道中途切换"的插值伪影，只压平离边更远的那个，保护拐角
+- [x] 在 `generate()` 末尾调用；既有"拐角仍尖"断言与新伪影/拐角断言均通过
+- [x] 全量 349 passed，commit `fc6fb73`
 
 ### A7 — COLR/CPAL 彩色字形（第二档，vector 最大块）
 - [ ] 自解析 COLR（base glyph + layer records）与 CPAL（palette BGRA）原始表字节，不引 skrifa

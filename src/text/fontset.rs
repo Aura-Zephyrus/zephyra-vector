@@ -224,6 +224,14 @@ impl GlyphSource for FontSet {
         self.fonts.first()?.source.metrics(px_size)
     }
 
+    fn color_layers_in(&self, font_id: u32, glyph_id: u32) -> Option<&[super::ColorLayer]> {
+        self.fonts
+            .iter()
+            .find(|s| s.source.font_id() == font_id)?
+            .source
+            .color_layers(glyph_id)
+    }
+
     fn advance_in(&mut self, font_id: u32, glyph_id: u32, px_size: f32) -> f32 {
         self.fonts
             .iter_mut()
