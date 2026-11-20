@@ -63,6 +63,7 @@ pub mod shape;
 pub mod stack;
 
 pub use ab_glyph_source::{from_font_file, from_system_font, AbGlyphSource, FONT_OVERRIDE_ENV};
+pub use crate::paint::LcdOrder;
 pub use fontset::{FontMeta, FontSet};
 pub use sdf::{sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD, SDF_TIERS};
 pub use shape::{bidi_runs, line_break_opportunities, ShapedGlyph, ShapedRun};
@@ -206,6 +207,14 @@ pub struct TextStyle {
     pub scale: f32,
     /// 段落基准方向；默认由 BiDi 自动推断。
     pub direction: TextDirection,
+    /// LCD 子像素排列；`None` 用普通灰度 MSDF。
+    ///
+    /// # 为什么默认关闭
+    ///
+    /// 子像素 AA 靠"RGB 三通道各自覆盖率不同"来提升小字号锐度，但当前混合是
+    /// `One/InvSrcAlpha`（标量 alpha），做不到逐通道混合。shader 保留 RGB 的
+    /// 子像素差异、alpha 取均值，是一种近似。是否接受这种近似由调用方决定。
+    pub lcd: Option<crate::paint::LcdOrder>,
 }
 
 impl Default for TextStyle {
@@ -220,6 +229,7 @@ impl Default for TextStyle {
             paragraph_spacing: 0.0,
             scale: 1.0,
             direction: TextDirection::Auto,
+            lcd: None,
         }
     }
 }

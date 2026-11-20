@@ -393,7 +393,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
         &mut self,
         shaped: &ShapedText,
         origin: Point,
-        _style: &TextStyle,
+        style: &TextStyle,
     ) -> Option<(TextureRef, Vec<GlyphQuad>)> {
         if self.disabled || shaped.lines.is_empty() {
             return None;
@@ -497,9 +497,17 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                     color_glyph: g.color_glyph,
                     // 真实来源产出 MSDF；替身只填灰度 SDF，但三通道相等时
                     // `median(r,g,b)` 退化为单通道，所以同一条 shader 路径通用。
-                    mask: GlyphMask::Msdf {
-                        w,
-                        embolden: g.embolden,
+                    // LCD 只是 MSDF 上的另一种采样方式，不另存一套位图。
+                    mask: match style.lcd {
+                        Some(order) => GlyphMask::LcdMsdf {
+                            w,
+                            embolden: g.embolden,
+                            order,
+                        },
+                        None => GlyphMask::Msdf {
+                            w,
+                            embolden: g.embolden,
+                        },
                     },
                 });
             }

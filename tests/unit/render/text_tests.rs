@@ -462,3 +462,34 @@ fn emoji_zwj_sequence_is_one_cluster() {
     );
     assert!(glyphs.iter().all(|g| !g.color_glyph));
 }
+
+/// LCD 模式选择：RGB / BGR 编码成不同 mode，普通 MSDF 不受影响。
+#[test]
+fn lcd_order_selects_distinct_shader_modes() {
+    let Some(mut stack) = system_stack() else {
+        eprintln!("跳过：找不到系统字体");
+        return;
+    };
+    let style = TextStyle {
+        size: 32.0,
+        ..Default::default()
+    };
+    let shaped = stack.shape("H", &style, None);
+
+    let (_, plain) = stack.glyph_quads(&shaped, Point::new(0.0, 0.0), &style).unwrap();
+    assert_eq!(plain[0].mask.mode_code(), 2.0, "默认应为 MSDF");
+
+    let rgb = TextStyle {
+        lcd: Some(crate::paint::LcdOrder::Rgb),
+        ..style.clone()
+    };
+    let (_, quads) = stack.glyph_quads(&shaped, Point::new(0.0, 0.0), &rgb).unwrap();
+    assert_eq!(quads[0].mask.mode_code(), 3.0, "RGB 应为 mode 3");
+
+    let bgr = TextStyle {
+        lcd: Some(crate::paint::LcdOrder::Bgr),
+        ..style
+    };
+    let (_, quads) = stack.glyph_quads(&shaped, Point::new(0.0, 0.0), &bgr).unwrap();
+    assert_eq!(quads[0].mask.mode_code(), 4.0, "BGR 应为 mode 4");
+}
