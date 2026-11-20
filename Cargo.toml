@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "zephyra-vector"
+description = "Backend-independent vector rendering: SVG paths, glyph atlas, text layout, vertex expansion and CPU rasterization"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.87"
+publish = false
+
+# 这个 crate 是「后端无关绘制」的全部：路径几何、图标、文本排版与图集、
+# 顶点展开、离屏规划与 CPU 光栅。它与主仓库代码完全隔离：依赖方向严格单向
+# （主仓库 → 本库），本库**不依赖任何 workspace 内的 crate**。
+# 门禁：`cargo tree -p zephyra-vector --depth 1` 只能出现 ab_glyph / bytemuck。
+[dependencies]
+ab_glyph = "0.2"
+bytemuck = { version = "1", features = ["derive"] }
+
+[lints.rust]
+unsafe_code = "forbid"
