@@ -48,8 +48,9 @@
 //!   在多份字体间选字，字重无匹配时用伪粗体合成；但可变字体的连续轴不在此范围内。
 //! - **彩色字形未光栅化**：emoji 的 ZWJ 序列在整形层能合成 cluster，但
 //!   `AbGlyphSource` 只栅格化 `glyf` 轮廓，COLR/CBDT 尚未接入。
-//! - **LCD 子像素混合是近似**：当前管线用标量 alpha 混合，shader 保留 RGB 子像素
-//!   差异、alpha 取均值；`TextStyle::lcd` 默认关闭。
+//! - **LCD 子像素混合采用逐通道覆盖率**：shader 把 RGB 三通道各自的覆盖率直接乘进
+//!   源颜色，alpha 取三通道最大值供 `SrcOver` 决定背景让位；它仍不是 GPU 双源混合
+//!   那种逐通道 dst 系数，但三个子像素颜色各自独立。`TextStyle::lcd` 默认关闭。
 //! - `GlyphSource::advance` 仍是单字符接口（用于光标定位等场景）；完整排版请走
 //!   [`GlyphSource::shape`] 与 [`crate::text::TextEngine::shape`]。
 
@@ -402,11 +403,11 @@ pub struct TextStyle {
     pub shadow: Option<TextShadow>,
     /// LCD 子像素排列；`None` 用普通灰度 MSDF。
     ///
-    /// # 为什么默认关闭
+    /// # 逐通道覆盖率
     ///
-    /// 子像素 AA 靠"RGB 三通道各自覆盖率不同"来提升小字号锐度，但当前混合是
-    /// `One/InvSrcAlpha`（标量 alpha），做不到逐通道混合。shader 保留 RGB 的
-    /// 子像素差异、alpha 取均值，是一种近似。是否接受这种近似由调用方决定。
+    /// shader 沿水平方向取三次 MSDF 样本，得到 R/G/B 三个子像素各自的覆盖率，
+    /// 分别乘进源颜色的三个通道；alpha 取三通道最大值。这比"统一乘一个均值
+    /// alpha"更接近 ClearType。是否启用由调用方决定（依赖像素排列 RGB/BGR）。
     pub lcd: Option<crate::paint::LcdOrder>,
 }
 

@@ -33,6 +33,8 @@ fn shade_source(i: VsOut) -> vec4f {
         let texel = textureSample(g_tex, g_smp, i.uv);
         var coverage = 0.0;
         var out_rgb = i.color.rgb;
+        // LCD 分支把逐通道覆盖率直接乘进 RGB，末尾不能再乘一次标量 coverage。
+        var per_channel_rgb = false;
 
         if (mode < 0.5) {
             coverage = texel.a;
@@ -52,14 +54,16 @@ fn shade_source(i: VsOut) -> vec4f {
                 let sd = max(min(s3.r, s3.g), min(max(s3.r, s3.g), s3.b));
                 cov[k] = smoothstep(0.5 - w - emb, 0.5 + w - emb, sd);
             }
-            // 当前管线用标量 alpha 混合，无法逐通道混合；保留 rgb 子像素差异。
-            coverage = (cov.r + cov.g + cov.b) / 3.0;
+            // 逐通道覆盖率进 RGB：三个子像素各自用自己的覆盖率着色。
+            // alpha 取三通道最大值，SrcOver 混合时目标按最强的子像素让位。
             out_rgb = i.color.rgb * cov;
+            coverage = max(cov.r, max(cov.g, cov.b));
+            per_channel_rgb = true;
         }
 
         let a = coverage * i.color.a;
         if (a - 0.0039 <= 0.0) { discard; }
-        return vec4f(out_rgb * coverage, a);
+        return select(vec4f(out_rgb * coverage, a), vec4f(out_rgb, a), per_channel_rgb);
     }
 
     // kind == 2：图像。采样当前批绑定的纹理（每批一种）。

@@ -169,6 +169,8 @@ float4 ShadeSource(VSOut i) {
         float4 texel = g_tex.Sample(g_smp, i.uv);
         float coverage = 0.0;
         float3 out_rgb = i.color.rgb;
+        // LCD 分支把逐通道覆盖率直接乘进 RGB，末尾不能再乘一次标量 coverage。
+        bool per_channel_rgb = false;
 
         if (mode < 0.5) {
             // 替身/降级：没有真实距离场，退回覆盖率位图。
@@ -190,16 +192,20 @@ float4 ShadeSource(VSOut i) {
                 float sd = max(min(s3.r, s3.g), min(max(s3.r, s3.g), s3.b));
                 cov[k] = smoothstep(0.5 - w - emb, 0.5 + w - emb, sd);
             }
-            // 当前管线用 One/InvSrcAlpha（标量 alpha），无法做逐通道混合。
-            // 保留 rgb 的子像素差异以得到 ClearType 效果，alpha 取三通道均值。
-            coverage = (cov.r + cov.g + cov.b) / 3.0;
+            // 逐通道覆盖率进 RGB：三个子像素各自用自己的覆盖率着色，得到真正的
+            // ClearType/RGB 子像素效果（而不是把所有通道统一乘一个均值 alpha）。
+            // alpha 取三通道最大值，SrcOver 混合时目标按最强的子像素让位，避免
+            // 背景从笔画缝隙里透出来。顶点颜色已预乘 alpha，末尾不再乘第二次。
             out_rgb = i.color.rgb * cov;
+            coverage = max(cov.r, max(cov.g, cov.b));
+            per_channel_rgb = true;
         }
 
         float a = coverage * i.color.a;
         clip(a - 0.0039);
-        // 预乘空间：`i.color.rgb` 在顶点展开时已乘过 `i.color.a`，这里再乘一次覆盖率。
-        return float4(out_rgb * coverage, a);
+        // 预乘空间：非 LCD 路径 `i.color.rgb` 在顶点展开时已乘过 `i.color.a`，
+        // 这里再乘一次覆盖率；LCD 路径 out_rgb 已含逐通道覆盖率，不可重复相乘。
+        return per_channel_rgb ? float4(out_rgb, a) : float4(out_rgb * coverage, a);
     }
 
     // kind == 2：图像。采样当前绑定的纹理（每批一种）。
