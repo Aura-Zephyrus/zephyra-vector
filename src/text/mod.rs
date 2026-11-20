@@ -81,6 +81,9 @@ pub use shape::{bidi_runs, line_break_opportunities, ShapedGlyph, ShapedRun};
 #[cfg(test)]
 #[path = "../../tests/unit/text/atlas_contract_tests.rs"]
 mod atlas_tests;
+#[cfg(test)]
+#[path = "../../tests/unit/text/metrics_tests.rs"]
+mod metrics_tests;
 
 pub use atlas::{
     AtlasGlyph, AtlasRaster, AtlasStats, EntryInfo, EvictPlan, EvictionPolicy, GlyphAtlas,
@@ -137,6 +140,17 @@ pub trait GlyphSource {
     /// `(SDF_PADDING, SDF_PADDING)` 开始；`width`/`height` 是**墨迹**尺寸。
     /// `None` = 空白字形（空格、零宽字符）—— 它们没有位图，但**有**步进。
     fn rasterize(&mut self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster>;
+
+    /// 字体在给定字号下的度量（DIP）。
+    ///
+    /// 对应 Skia 的 `SkFontMetrics`。排版端用它算真实行高、基线，以及装饰线的
+    /// 默认粗细/位置 —— 而不是拿"字号 × 1.2"和"字号 × 6%"去猜。
+    ///
+    /// 默认 `None`：替身（定宽字体、空实现）没有真实字体表，排版端会回退到
+    /// 经验值。真实字体来源应覆盖它。
+    fn metrics(&self, _px_size: f32) -> Option<FontMetrics> {
+        None
+    }
 
     /// 把一段文本整形为**视觉顺序**的字形 run。
     ///
@@ -201,6 +215,59 @@ pub enum TextDirection {
     Rtl,
 }
 
+/// 字体度量，对应 Skia 的 `SkFontMetrics`。
+///
+/// 全部是**已经按 `px_size` 缩放好的 DIP 值**，不是字体单位：排版端拿到就能直接用。
+/// 基线是 y=0；`ascent` 向上为正、`descent` 向下为负。装饰线的 position 是
+/// "在基线下方多少 DIP"（正值），与 `stack.rs` 里 y 向下的坐标系一致。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FontMetrics {
+    /// 基线之上的升部（正值）。
+    pub ascent: f32,
+    /// 基线之下的降部（负值）。
+    pub descent: f32,
+    /// 行间距（hhea lineGap，正值）。
+    pub leading: f32,
+    /// x 高度（小写字母 x 的顶到基线）。字体没有该表时为 0。
+    pub x_height: f32,
+    /// 大写高度（cap height）。字体没有该表时为 0。
+    pub cap_height: f32,
+    /// 下划线建议粗细。
+    pub underline_thickness: f32,
+    /// 下划线中心距基线的距离（向下为正）。
+    pub underline_position: f32,
+    /// 删除线建议粗细。
+    pub strikethrough_thickness: f32,
+    /// 删除线中心距基线的距离（y 向下有符号值；删除线在基线上方 ⇒ 通常为负）。
+    pub strikethrough_position: f32,
+}
+
+impl FontMetrics {
+    /// 字号对应的自然行高：`ascent - descent + leading`。
+    ///
+    /// 字体没提供度量时（全 0）返回 0，调用方据此回退到经验值。
+    pub fn line_height(self) -> f32 {
+        self.ascent - self.descent + self.leading
+    }
+}
+
+/// 强制行框（strut），对应 Skia 的 `SkStrutStyle`。
+///
+/// 用来在多字号/多字体混排时把每一行的基线钉在同一套度量上：`force=true` 时
+/// 未指定的字段取"半个经验行高"，而不是落回字体自身的度量 —— 这正是 Skia
+/// `forceStrutHeight` 的语义。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct StrutStyle {
+    /// 覆盖升部（DIP，正值）。
+    pub ascent: Option<f32>,
+    /// 覆盖降部（DIP，正值表示"基线下方"的大小）。
+    pub descent: Option<f32>,
+    /// 覆盖行间距（DIP）。
+    pub leading: Option<f32>,
+    /// 强制使用 strut：未指定字段不再回退到字体度量。
+    pub force: bool,
+}
+
 /// 文本样式。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextStyle {
@@ -212,6 +279,8 @@ pub struct TextStyle {
     pub family: Option<String>,
     /// 行高倍数；`None` 用字体自带值。
     pub line_height: Option<f32>,
+    /// 强制行框。`Some` 时优先于字体自带度量（Skia `SkStrutStyle`）。
+    pub strut: Option<StrutStyle>,
     /// 字间距（DIP，每个字形步进后追加的额外间距，可为负）。
     ///
     /// 对应 CSS `letter-spacing`。`0.0` 表示不加间距。
@@ -251,6 +320,7 @@ impl Default for TextStyle {
             weight: 400,
             family: None,
             line_height: None,
+            strut: None,
             letter_spacing: 0.0,
             text_align: TextAlign::Left,
             paragraph_spacing: 0.0,

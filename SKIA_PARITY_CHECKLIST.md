@@ -1,0 +1,115 @@
+# Skia 文字渲染对齐 —— 执行清单
+
+> 本文件是跨会话的执行台账。每完成一项就勾选并在底部「进度日志」记一笔。
+> 范围：第一档 5 项 + 第二档 4 项，全做，不设时间上限。
+
+## 0. 环境与约束（动手前读）
+
+- vector 仓：`E:\zephyra-vector`，分支 `main`，起点 `260d442`，工作区干净。
+- 主仓：`E:\ZephyraUI`，分支 `main`，起点 `c08cc2a`（已含图集串位修复）。
+- vector 是主仓的 git 依赖（主仓 Cargo.lock 锁 `#260d4429`）。**vector 改完必须 commit+push，主仓再 `cargo update -p zephyra-vector`**。
+- 硬约束：
+  - 不引入新的系统依赖 / Cargo 依赖（vector 严格依赖门禁）。
+  - 字体发现 / FontMgr 归宿主，不在 vector 做。
+  - shader 源码/二进制只在 `E:\zephyra-vector\shaders`，主仓只消费 `zephyra_fx::shaders` 常量；改 shader 要重编 DXBC 并过 fxc 字节一致门禁。
+  - 所有文本文件 LF 行尾。
+- Viewstage-Rust 锁着旧 vector `#d995088`；最后可选更新它做人工截图回归。
+
+## Step 0：拉参考源码（只读，不并入仓库）
+
+- [ ] `git clone --filter=blob:none --depth 1 https://github.com/google/skia.git E:\skia`
+- [ ] `git -C E:\skia sparse-checkout set include/core include/skshaper src/core src/skshaper src/gpu/ganesh/text`
+- [ ] `git clone --depth 1 https://github.com/Chlumsky/msdfgen.git E:\msdfgen`
+- [ ] 读 Skia 关键文件：
+  - 度量/Strut：`include/core/SkFontMetrics.h`、`include/core/SkStrutStyle.h`、`src/core/SkFont.cpp`、`src/core/SkStrutStyle.cpp`
+  - features：`include/skshaper/SkShaper.h`、`src/skshaper/`
+  - 装饰线：`src/core/SkFontPriv.cpp`、`src/text/`
+  - 省略号：`src/text/SkParagraph.cpp`、`include/core/SkTextBlob.h`
+  - LCD：`src/gpu/ganesh/text/`、`src/core/SkScalerContext.cpp`、`src/core/SkGlyphRunPainter.cpp`
+  - COLR：`src/core/SkTypeface.cpp` / `src/core/SkScalerContext.cpp` 附近颜色字体分支
+- [ ] 读 msdfgen：`src/msdfgen.cpp`、`src/editor.cpp`（`msdfErrorCorrection`）
+
+## 批次 A：vector 仓（按序，每步一个 commit + 测试）
+
+### A1 — 真实字体度量 / StrutStyle（第二档，先做）
+- [ ] `src/text/mod.rs` 新增 `FontMetrics`（ascent/descent/leading/x_height/cap_height/underline_thickness/underline_position）与 `StrutStyle`（可覆盖 ascent/descent/leading + force）
+- [ ] `GlyphSource` trait 加 `fn metrics(&self, px_size: f32) -> Option<FontMetrics>`（默认实现，保护测试替身）
+- [ ] `AbGlyphSource` 从 ab_glyph 的 hhea/OS2 读真实值；`FontSet` 按回退链首字体取
+- [ ] `stack.rs` 行高改为 `ascent − descent + leading`（读不到回退 1.2）；基线、装饰线默认厚度/偏移改用度量
+- [ ] ⚠️ 行为变化：默认行高会变，同步更新依赖 1.2 的测试断言
+- [ ] `cargo test` 全绿，commit
+
+### A2 — OpenType features + word-spacing（第一档，整形层）
+- [ ] `TextStyle` 加 `font_features: Vec<(u32,u32)>`、`word_spacing: f32`
+- [ ] 透传链路：`TextStyle → TextEngine::shape → TextStack::shape → GlyphSource::shape → ab_glyph_source.rs` → rustybuzz `Feature`/`ShapePlan`
+- [ ] word-spacing 按空格字素簇追加，与 `letter_spacing` cluster 逻辑（`stack.rs:236`）共用；`advance()` 测量路径同步
+- [ ] `FontSet` 逐字体分段各自应用 features
+- [ ] 测试 + commit
+
+### A3 — 装饰线样式（第一档，依赖 A1 度量默认值）
+- [ ] `TextDecorationStyle` 枚举（Solid/Dotted/Dashed/Wavy）+ `TextStyle::decoration_style`
+- [ ] `stack.rs:555-583` quad 生成：Dotted/Dashed 拆多段小矩形；Wavy 用一串小矩形近似正弦；走 `render/quad.rs` RECT 路径，不动顶点布局
+- [ ] stretch：underline 跟随字形几何（用 quad 包围盒在穿过下划线的字处留缺口），单独 commit
+- [ ] 测试 + commit
+
+### A4 — 文字阴影（第一档）
+- [ ] `TextStyle::shadow: Option<TextShadow>`（offset + color；blur 暂不做）
+- [ ] `stack.rs` 主字形 quad 前插偏移+改色副本，画在底下
+- [ ] 测试 + commit
+
+### A5 — 省略号 / max_lines（第一档）
+- [ ] `TextStyle::max_lines: Option<usize>`、`ellipsis: Option<String>`（默认 "…"）
+- [ ] `stack.rs` 断行：超行数截断末行 + 插省略号；测量阶段把省略号宽度算进去防溢出
+- [ ] 测试 + commit
+
+### A6 — MSDF error correction（第二档）
+- [ ] `src/text/msdf.rs`：对产生中位数的边，用像素到该边的真实有符号距离替换该通道值
+- [ ] 断言：角点处 `median(r,g,b)` 与 coverage 推出的 SDF 一致
+- [ ] 测试 + commit
+
+### A7 — COLR/CPAL 彩色字形（第二档，vector 最大块）
+- [ ] 自解析 COLR（base glyph + layer records）与 CPAL（palette BGRA）原始表字节，不引 skrifa
+- [ ] `GlyphSource` 加 `fn color_layers(&self, glyph_id, px_size) -> Option<Vec<ColorLayer>>`（默认 None）；`AbGlyphSource` 实现
+- [ ] atlas key 支持 `(glyph_id, layer_idx)` 编码成 u64（最侵入点，单独 commit，重点回归）
+- [ ] `stack.rs` 每 layer 出带色 quad，复用现有 mask 采样通道
+- [ ] 测试 + commit（CBDT/CBLC 位图 emoji 本轮不做：需 PNG 解码器，破零依赖约束）
+- [ ] **A1–A7 全部 commit + push**
+
+## 批次 B：主仓（vector push 之后）
+
+### B1 — 适配新 TextStyle
+- [ ] `cargo update -p zephyra-vector`（主仓）
+- [ ] `zephyra-core/src/style.rs` 构造 TextStyle 处补新字段（`..Default::default()`）
+- [ ] 确认 `node.rs`/`paint.rs` 缓存指纹未被破坏（TextStyle 派生 PartialEq，新字段自动进指纹）
+- [ ] `cargo test -p zephyra-core` + `cargo check --workspace --tests`
+
+### B2 — 逐通道 LCD 混合（第二档，最后，跨仓）
+- [ ] 先读 Skia `src/gpu/ganesh/text/` 确认 GPU LCD 实际路径
+- [ ] 方案二选一（都做能力检测 + 回退当前近似，老设备不能黑屏）：
+  - 双源混合：片元 `SV_Target0=text·mask`、`SV_Target1=mask`，blend `ONE/INV_SRC1_COLOR`（需 SM5.1+/D3D11.3，核实 fxc 与目标设备；Vulkan 原生支持）
+  - 两遍法：第一遍 `ZERO/INV_SRC_COLOR` 挖空 dst，第二遍 `ONE/ONE` 加 `text·mask`（通用，两次 draw）
+- [ ] 影响面：`shaders/hlsl/shade.hlsli`、`shaders/wgsl/10_shade.wgsl.part`、DXBC 重编 + fxc 字节门禁、`zephyra-fx::shaders` 常量、D3D11/D3D12/Vulkan/winit 四处 blend state、`LcdOrder` RGB/BGR 顺序
+- [ ] `TextStyle::lcd` 默认保持 None（opt-in）
+- [ ] 测试 + fxc 门禁 + commit
+
+### B3 — 验证与收尾
+- [ ] vector：`cargo test`（基线 333 passed / 1 ignored 全绿）+ fxc/shader 同步门禁
+- [ ] main：`cargo test -p zephyra-core` + `cargo check --workspace --tests`
+- [ ] 全部文件 LF 行尾确认
+- [ ] vector / main 分别 commit + push
+- [ ] 可选：Viewstage-Rust `cargo update -p zephyra-vector` 后重编截图设置页，确认无串位复发、新装饰线/省略号/彩色 emoji 正常
+
+## 明确不做（本轮）
+
+- 可变字体轴 fvar/gvar（需 skrifa 或自写 gvar 插值，破依赖门禁）
+- 文字沿路径 / 旋转缩放（要改 Command::Text + 三后端顶点展开）
+- Hyphenation 词典
+- 系统字体发现 / FontMgr（归宿主）
+- CBDT/CBLC 位图 emoji（需 PNG 解码器）
+- 宿主 `TextStack<AbGlyphSource>` → `TextStack<FontSet>` 切换（用户本轮未列，单独确认）
+
+## 进度日志
+
+（每完成一项记一行：日期 / 项 / commit / 备注）
+
+- 2026-11-20 建立清单。起点：vector `260d442`、main `c08cc2a`。

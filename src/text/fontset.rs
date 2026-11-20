@@ -26,7 +26,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::ab_glyph_source::AbGlyphSource;
 use super::shape::{bidi_runs, dominant_script, ShapedGlyph, ShapedRun};
-use super::{AtlasRaster, GlyphSource, TextStyle};
+use super::{AtlasRaster, FontMetrics, GlyphSource, TextStyle};
 
 /// 一份字体的选择元数据。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +216,12 @@ impl GlyphSource for FontSet {
             .first_mut()
             .map(|s| s.source.advance(glyph_id, px_size))
             .unwrap_or(0.0)
+    }
+
+    fn metrics(&self, px_size: f32) -> Option<FontMetrics> {
+        // 行框取默认字体的度量。混排时逐字体度量不同是常态，但强制定 strut
+        // 的语义就是"所有行用同一套框"，所以这里用第 0 份字体作为统一基准。
+        self.fonts.first()?.source.metrics(px_size)
     }
 
     fn advance_in(&mut self, font_id: u32, glyph_id: u32, px_size: f32) -> f32 {

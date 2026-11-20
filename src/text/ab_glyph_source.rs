@@ -57,7 +57,7 @@ use crate::core::Point;
 use crate::text::msdf::outline_segments;
 use crate::text::sdf::{SDF_BASE_PX, SDF_PADDING, SDF_SPREAD};
 use crate::text::shape::{bidi_runs, dominant_script, rustybuzz_script, ShapedGlyph, ShapedRun};
-use crate::text::{AtlasRaster, GlyphSource, TextStack, TextStyle};
+use crate::text::{AtlasRaster, FontMetrics, GlyphSource, TextStack, TextStyle};
 use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont};
 use rustybuzz::ttf_parser::Tag;
 
@@ -420,6 +420,32 @@ impl GlyphSource for AbGlyphSource {
         self.font
             .as_scaled(scale)
             .h_advance(GlyphId(glyph_id.min(u16::MAX as u32) as u16))
+    }
+
+    fn metrics(&self, px_size: f32) -> Option<FontMetrics> {
+        if px_size <= 0.0 {
+            return None;
+        }
+        // 用 font units / upem × em 字号缩放。ab_glyph 的 `ascent_unscaled` 等
+        // 直接来自 ttf-parser 的 hhea，已经是字体单位；**不能**走 `px_scale`
+        // —— 那里面乘了 hhea 行高/em，会把升部再放一次。
+        let s = px_size / self.units_per_em();
+        let face = rustybuzz::ttf_parser::Face::parse(self.font.as_slice(), 0).ok()?;
+        let underline = face.underline_metrics();
+        let strikeout = face.strikeout_metrics();
+        Some(FontMetrics {
+            ascent: self.font.ascent_unscaled() * s,
+            descent: self.font.descent_unscaled() * s,
+            leading: self.font.line_gap_unscaled() * s,
+            x_height: face.x_height().unwrap_or(0) as f32 * s,
+            cap_height: face.capital_height().unwrap_or(0) as f32 * s,
+            // ttf-parser 的 position 是 y 向上（下划线在基线下方 ⇒ 负值），
+            // 这里统一成 y 向下、基线下方为正，和 stack.rs 的装饰线计算一致。
+            underline_thickness: underline.map(|m| m.thickness as f32 * s).unwrap_or(0.0),
+            underline_position: underline.map(|m| -(m.position as f32) * s).unwrap_or(0.0),
+            strikethrough_thickness: strikeout.map(|m| m.thickness as f32 * s).unwrap_or(0.0),
+            strikethrough_position: strikeout.map(|m| -(m.position as f32) * s).unwrap_or(0.0),
+        })
     }
 
     fn rasterize(&mut self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster> {

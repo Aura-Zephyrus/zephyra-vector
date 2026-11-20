@@ -24,11 +24,57 @@ use super::{
     atlas::AtlasRaster,
     line_break_opportunities,
     sdf::{from_coverage, sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD},
-    GlyphAtlas, GlyphSource, Line, PlacedGlyph, ShapedText, TextAlign, TextRender, TextStyle,
+    FontMetrics, GlyphAtlas, GlyphSource, Line, PlacedGlyph, ShapedText, TextAlign, TextRender,
+    TextStyle,
 };
 
 /// 默认行高倍数。字体自带值缺失时用它。
 pub const DEFAULT_LINE_HEIGHT: f32 = 1.2;
+
+/// 解析最终行高，优先级：显式倍数 > strut > 字体真实度量 > 经验值。
+///
+/// 对应 Skia：显式倍数相当于调用方直接给行高；`strut` 相当于 `SkStrutStyle`；
+/// 再往下就是 `SkFontMetrics` 的 `fAscent - fDescent + fLeading`。
+pub fn resolved_line_height(
+    style: &TextStyle,
+    px_size: f32,
+    metrics: Option<FontMetrics>,
+) -> f32 {
+    if let Some(mul) = style.line_height {
+        return mul * px_size;
+    }
+    if let Some(strut) = style.strut {
+        let m = metrics.unwrap_or_default();
+        let half = DEFAULT_LINE_HEIGHT * px_size * 0.5;
+        let ascent = strut
+            .ascent
+            .unwrap_or(if strut.force {
+                half
+            } else if m.ascent > 0.0 {
+                m.ascent
+            } else {
+                half
+            });
+        let descent = strut
+            .descent
+            .unwrap_or(if strut.force {
+                half
+            } else if m.descent < 0.0 {
+                -m.descent
+            } else {
+                half
+            });
+        let leading = strut
+            .leading
+            .unwrap_or(if strut.force { 0.0 } else { m.leading });
+        return ascent + descent + leading;
+    }
+    match metrics {
+        Some(m) if m.line_height() > 0.0 => m.line_height(),
+        _ => DEFAULT_LINE_HEIGHT * px_size,
+    }
+}
+
 
 /// 文本栈：把字符流变成可绘制的字形。
 pub struct TextStack<S: GlyphSource> {
@@ -300,7 +346,8 @@ impl<S: GlyphSource> TextStack<S> {
             };
         }
         let px_size = style.effective_size().max(1.0);
-        let line_height = style.line_height.unwrap_or(DEFAULT_LINE_HEIGHT) * px_size;
+        let metrics = self.source.metrics(px_size);
+        let line_height = resolved_line_height(style, px_size, metrics);
 
         // 空文本：返回**零行**而不是"一行空行"。
         //
@@ -376,7 +423,8 @@ impl<S: GlyphSource> super::TextEngine for TextStack<S> {
         if self.disabled {
             return 0.0;
         }
-        style.line_height.unwrap_or(DEFAULT_LINE_HEIGHT) * style.effective_size().max(1.0)
+        let px = style.effective_size().max(1.0);
+        resolved_line_height(style, px, self.source.metrics(px))
     }
 }
 
@@ -548,11 +596,31 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
         // 用字形跨度而不是 `line.width`：两端对齐后两者可能不同，而装饰线必须
         // 跟着字形走。走 RECT 分支，不采样纹理，也不增加 shader 变体。
         if style.decoration.any() {
+            // 装饰线的默认粗细/位置取自字体真实度量（Skia 的 underline/strikeout
+            // metrics）；拿不到时才退回"字号 × 百分比"的经验值。
+            let metrics = self.source.metrics(display_px);
             let thickness = style
                 .decoration_thickness
-                .unwrap_or(display_px * 0.06)
+                .unwrap_or_else(|| {
+                    metrics
+                        .and_then(|m| {
+                            if style.decoration.underline {
+                                (m.underline_thickness > 0.0).then_some(m.underline_thickness)
+                            } else {
+                                (m.strikethrough_thickness > 0.0)
+                                    .then_some(m.strikethrough_thickness)
+                            }
+                        })
+                        .unwrap_or(display_px * 0.06)
+                })
                 .max(0.5);
-            let underline_offset = style.decoration_offset.unwrap_or(display_px * 0.12);
+            let underline_offset = style
+                .decoration_offset
+                .unwrap_or_else(|| {
+                    metrics
+                        .and_then(|m| (m.underline_position > 0.0).then_some(m.underline_position))
+                        .unwrap_or(display_px * 0.12)
+                });
             for line in &shaped.lines {
                 let Some(x0) = line
                     .glyphs
@@ -578,7 +646,15 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                     ys.push(baseline_y + underline_offset);
                 }
                 if style.decoration.strikethrough {
-                    ys.push(baseline_y - display_px * 0.30);
+                    // 删除线在基线**上方**：FontMetrics 里存的是 y 向下有符号值
+                    // （通常为负），所以直接相加；字体没给表时退回原来的经验值。
+                    let strike_offset = metrics
+                        .and_then(|m| {
+                            (m.strikethrough_position != 0.0)
+                                .then_some(m.strikethrough_position)
+                        })
+                        .unwrap_or(-display_px * 0.30);
+                    ys.push(baseline_y + strike_offset);
                 }
                 if style.decoration.overline {
                     ys.push(baseline_y - display_px * 0.78);
