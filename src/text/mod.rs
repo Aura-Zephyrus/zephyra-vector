@@ -52,7 +52,7 @@
 //!   [`GlyphSource::shape`] 与 [`crate::text::TextEngine::shape`]。
 
 use crate::core::{Point, Rect, Size, UvRect};
-use crate::paint::{GlyphQuad, TextureRef};
+use crate::paint::{GlyphMask, GlyphQuad, TextureRef};
 
 pub mod ab_glyph_source;
 pub mod atlas;
@@ -537,7 +537,7 @@ pub fn quads_from_shaped(
                 ),
                 color_glyph: g.color_glyph,
                 // 替身没有图集，走旧的覆盖率路径（uv 指向 (0,0) 那个像素）。
-                sdf: None,
+                mask: GlyphMask::Coverage,
             });
         }
     }

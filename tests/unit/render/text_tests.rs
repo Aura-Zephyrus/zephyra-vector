@@ -237,7 +237,7 @@ fn one_sdf_bitmap_serves_every_display_size() {
         "四边形应随显示字号线性放大 3 倍"
     );
     // 字号越大，smoothstep 在 SDF 值域上的半宽越窄 —— 边缘因此保持锐利。
-    assert!(qb[0].sdf.unwrap() < qa[0].sdf.unwrap());
+    assert!(qb[0].mask.w() < qa[0].mask.w());
 }
 
 /// 大字号自动切到高档位：图集里多一份位图，但四边形尺寸仍随字号线性变化。
@@ -273,7 +273,7 @@ fn large_text_uses_a_higher_sdf_tier() {
     );
     // 200px 用 256 档（只缩小不放大），16px 用 64 档。
     assert!(
-        qb[0].sdf.unwrap() < qa[0].sdf.unwrap(),
+        qb[0].mask.w() < qa[0].mask.w(),
         "高档位在 SDF 值域的过渡更窄"
     );
 }

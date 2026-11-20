@@ -43,7 +43,7 @@
 //! 尺寸相同、内容清晰 —— 因为栅格化发生在物理像素上。
 
 use crate::core::{Color, Point, Rect, UvRect};
-use crate::paint::{Command, DisplayList};
+use crate::paint::{Command, DisplayList, GlyphMask};
 use std::rc::Rc;
 
 /// 每顶点 56 字节：位置(2) + 局部(2) + uv(2) + 颜色(4) + 圆角描边(2) + 半宽半高(2) + 类型(1) + 角形状(1) 个 f32。
@@ -415,27 +415,36 @@ impl Vertex {
         )
     }
 
-    /// SDF 字形四边形（`kind == GLYPH`）。
+    /// 字形四边形（`kind == GLYPH`），采样方式由 `mask` 决定。
     ///
-    /// 与 [`Self::from_uv_rect`] 的唯一差别是 `corner.x = w`：`w` 是
-    /// `smoothstep(0.5-w, 0.5+w, sampled.r)` 的半宽，由排版端按当前字号算好。
-    /// 四边形本身不扩：`dst` 已经覆盖了图集里含留白的整块区域。
-    pub fn from_sdf_rect(
+    /// 顶点布局复用了两个对字形**空闲**的通道：
+    ///
+    /// - `shape` = [`GlyphMask::mode_code`]（0=覆盖率，1=SDF，2=MSDF，3/4=LCD）；
+    ///   矩形分支仍把 `shape` 当角形状参数，两条分支互不干扰。
+    /// - `corner.y` = 伪粗体阈值偏移（仅 MSDF/LCD 读）。
+    ///
+    /// `corner.x = w` 保持原义：`w` 是 smoothstep 的半宽。四边形本身不扩 ——
+    /// `dst` 已经覆盖了图集里含留白的整块区域。
+    pub fn from_glyph_rect(
         rect: Rect,
         px: (f32, f32),
         color: [f32; 4],
         uv: UvRect,
-        w: f32,
+        mask: GlyphMask,
     ) -> [Vertex; 4] {
+        let mode = mask.mode_code();
+        // 覆盖率路径沿用 `from_uv_rect` 的 corner.x = 0 约定：CPU 参考光栅靠它
+        // 区分"采样 alpha"与"采样距离场"。
+        let w = if mode > 0.0 { mask.w().max(1e-5) } else { 0.0 };
         Self::quad(
             rect,
             px,
             color,
-            [w.max(1e-5), 0.0],
+            [w, mask.embolden()],
             [uv.x, uv.y],
             [uv.right(), uv.bottom()],
             kind::GLYPH,
-            1.0,
+            mode,
         )
     }
 
@@ -1718,18 +1727,9 @@ pub fn expand_range_translated_into(
                             )
                         }
                     };
-                    if let Some(w) = g.sdf {
-                        out.solid
-                            .extend_from_slice(&Vertex::from_sdf_rect(rect, px, rgba, uv, w));
-                    } else {
-                        out.solid.extend_from_slice(&Vertex::from_uv_rect(
-                            rect,
-                            px,
-                            rgba,
-                            uv,
-                            kind::GLYPH,
-                        ));
-                    }
+                    out.solid.extend_from_slice(&Vertex::from_glyph_rect(
+                        rect, px, rgba, uv, g.mask,
+                    ));
                     out.report.quads += 1;
                 }
                 // 整段文本记成一段：字形之间没有纹理/混合模式的变化，拆开只会让

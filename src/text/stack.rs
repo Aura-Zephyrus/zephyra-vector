@@ -18,7 +18,7 @@
 //! ```
 
 use crate::core::{Point, Rect, Size, UvRect};
-use crate::paint::{GlyphQuad, TextureRef};
+use crate::paint::{GlyphMask, GlyphQuad, TextureRef};
 
 use super::{
     atlas::AtlasRaster,
@@ -492,7 +492,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                         (entry.size.height + 2.0 * pad) * scale,
                     ),
                     color_glyph: g.color_glyph,
-                    sdf: Some(w),
+                    mask: GlyphMask::Sdf { w },
                 });
             }
         }

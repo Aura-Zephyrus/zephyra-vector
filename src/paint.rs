@@ -377,6 +377,82 @@ impl DynamicPath {
     }
 }
 
+/// LCD 子像素排列顺序。
+///
+/// RGB 与 BGR 在采样时的唯一差别是三次采样的水平偏移方向相反 —— 见
+/// [`GlyphMask::LcdMsdf`] 与着色器字形分支。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LcdOrder {
+    #[default]
+    Rgb,
+    Bgr,
+}
+
+/// 字形掩码的**采样方式**。
+///
+/// # 为什么是一个枚举，而不是一组布尔
+///
+/// 覆盖率、SDF、MSDF、LCD 是四种互斥的采样语义。若用
+/// `is_sdf: bool` + `is_msdf: bool` + `is_lcd: bool`，就会出现 `true/true/true`
+/// 这种不合法组合，而着色器只能靠"先检查哪个"来消歧 —— 那是静默错误的温床。
+/// 枚举把不合法状态从类型里删掉。
+///
+/// 模式码（`mode_code`）送进顶点 `shape` 通道：字形分支读它，矩形分支仍把
+/// `shape` 解释为角形状参数，两者互不干扰。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GlyphMask {
+    /// 旧式覆盖率位图：alpha 通道即覆盖率（替身、无字体降级）。
+    Coverage,
+    /// 单通道 SDF：读 `red`，按 `w` 做 smoothstep。
+    Sdf {
+        /// smoothstep 在 SDF 值域上的过渡半宽。
+        w: f32,
+    },
+    /// 多通道 SDF：读 `rgb` 取中位数，按 `w` 做 smoothstep。
+    Msdf {
+        w: f32,
+        /// 伪粗体阈值偏移（正值变粗）：在 smoothstep 输入上减掉它。
+        embolden: f32,
+    },
+    /// LCD 亚像素：在 MSDF 上按子像素偏移采样三次，得到 RGB 各自覆盖率。
+    LcdMsdf {
+        w: f32,
+        embolden: f32,
+        order: LcdOrder,
+    },
+}
+
+impl GlyphMask {
+    /// 送进顶点 `shape` 通道的模式码。与 HLSL/WGSL 字形分支的 `mode` 常量一致。
+    pub fn mode_code(self) -> f32 {
+        match self {
+            Self::Coverage => 0.0,
+            Self::Sdf { .. } => 1.0,
+            Self::Msdf { .. } => 2.0,
+            Self::LcdMsdf { order: LcdOrder::Rgb, .. } => 3.0,
+            Self::LcdMsdf { order: LcdOrder::Bgr, .. } => 4.0,
+        }
+    }
+
+    /// smoothstep 半宽；覆盖率路径返回 0。
+    pub fn w(self) -> f32 {
+        match self {
+            Self::Coverage => 0.0,
+            Self::Sdf { w }
+            | Self::Msdf { w, .. }
+            | Self::LcdMsdf { w, .. } => w,
+        }
+    }
+
+    /// 伪粗体阈值偏移；仅 MSDF/LCD 支持。
+    pub fn embolden(self) -> f32 {
+        match self {
+            Self::Msdf { embolden, .. } | Self::LcdMsdf { embolden, .. } => embolden,
+            _ => 0.0,
+        }
+    }
+}
+
 /// 一个已定位的字形四边形。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlyphQuad {
@@ -389,9 +465,8 @@ pub struct GlyphQuad {
     pub dst: Rect,
     /// 该字形是否来自彩色字体（如 emoji）——决定采样时是否忽略 `color`。
     pub color_glyph: bool,
-    /// `Some(w)` = 这是 SDF 字形，`w` 是 `smoothstep` 在 SDF 值域上的过渡半宽；
-    /// `None` = 旧式覆盖率位图（替身、无字体降级路径）。
-    pub sdf: Option<f32>,
+    /// 采样方式。取代原先的 `sdf: Option<f32>`。
+    pub mask: GlyphMask,
 }
 
 /// 一条命令的排序键。

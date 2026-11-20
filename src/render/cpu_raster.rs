@@ -285,14 +285,38 @@ impl CpuCanvas {
                 let color = a.color;
                 let coverage = match a.kind {
                     k if (k - kind::GLYPH).abs() < 0.01 => {
-                        if a.corner[0] > 0.0 {
-                            // SDF：`corner.x` 是与 GPU 共用的一条契约 —— smoothstep
-                            // 半宽由排版端按显示字号算好，两边用同一条公式。
-                            let s = atlas.map(|at| at.sample_sdf(uv)).unwrap_or(0.0);
-                            let w = a.corner[0];
-                            smoothstep(0.5 - w, 0.5 + w, s)
-                        } else {
+                        // `shape` 在字形分支里是采样模式码（矩形分支仍当角形状参数）。
+                        let mode = a.shape;
+                        let half = a.corner[0];
+                        let emb = a.corner[1];
+                        if mode < 0.5 {
                             atlas.map(|at| at.sample_alpha(uv)).unwrap_or(0.0)
+                        } else if mode < 1.5 {
+                            // 单通道 SDF：半宽由排版端按显示字号算好。
+                            let s = atlas.map(|at| at.sample_sdf(uv)).unwrap_or(0.0);
+                            smoothstep(0.5 - half, 0.5 + half, s)
+                        } else if mode < 2.5 {
+                            let [r, g, b] =
+                                atlas.map(|at| at.sample_msdf(uv)).unwrap_or([0.0; 3]);
+                            smoothstep(0.5 - half - emb, 0.5 + half - emb, median3(r, g, b))
+                        } else {
+                            // LCD：沿 x 取三次 MSDF 样本。CPU 参考路径没有逐通道
+                            // alpha，取三通道均值作标量覆盖率（与 shader 输出的
+                            // 标量 alpha 同一近似）。
+                            let duv = (chunk[2].uv[0] - a.uv[0]) / w.max(1.0);
+                            let dir = if mode < 3.5 { 1.0 } else { -1.0 };
+                            let mut total = 0.0f32;
+                            for shift in [-1.0f32 / 3.0, 0.0, 1.0 / 3.0] {
+                                let u = [uv[0] + shift * duv * dir, uv[1]];
+                                let [r, g, b] =
+                                    atlas.map(|at| at.sample_msdf(u)).unwrap_or([0.0; 3]);
+                                total += smoothstep(
+                                    0.5 - half - emb,
+                                    0.5 + half - emb,
+                                    median3(r, g, b),
+                                );
+                            }
+                            total / 3.0
                         }
                     }
                     // 图像：**只画形状，不采样纹理。**
@@ -360,6 +384,25 @@ impl AtlasBitmap {
             return 0.0;
         }
         self.pixels[(y * s + x) * 4] as f32 / 255.0
+    }
+
+    /// 按 uv 取 MSDF 的三个通道（0..1）。与 GPU 分支读的同三个通道。
+    pub fn sample_msdf(&self, uv: [f32; 2]) -> [f32; 3] {
+        if uv[0] < 0.0 || uv[1] < 0.0 || uv[0] >= 1.0 || uv[1] >= 1.0 {
+            return [0.0; 3];
+        }
+        let s = self.size as usize;
+        let x = (uv[0] * s as f32) as usize;
+        let y = (uv[1] * s as f32) as usize;
+        if x >= s || y >= s {
+            return [0.0; 3];
+        }
+        let i = (y * s + x) * 4;
+        [
+            self.pixels[i] as f32 / 255.0,
+            self.pixels[i + 1] as f32 / 255.0,
+            self.pixels[i + 2] as f32 / 255.0,
+        ]
     }
 
     /// 非透明像素数。
@@ -485,6 +528,20 @@ fn sd_corner_shape(local: [f32; 2], half_size: [f32; 2], radius: f32, shape_k: f
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// 三数取中。MSDF 用 `median(r,g,b)` 还原边缘，与 HLSL/WGSL 一致。
+fn median3(mut a: f32, mut b: f32, mut c: f32) -> f32 {
+    if a > b {
+        std::mem::swap(&mut a, &mut b);
+    }
+    if b > c {
+        std::mem::swap(&mut b, &mut c);
+    }
+    if a > b {
+        std::mem::swap(&mut a, &mut b);
+    }
+    b
 }
 
 fn to_bytes(c: [f32; 4]) -> [u8; 4] {

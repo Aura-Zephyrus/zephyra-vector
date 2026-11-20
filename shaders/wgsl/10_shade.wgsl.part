@@ -3,6 +3,10 @@
 /// 抽出来是因为「算出源色」这部分与混合模式**完全无关**，共用一份才不会出现
 /// 「某个混合模式下的圆角矩形与默认路径长得不一样」这类漂移。
 fn shade_source(i: VsOut) -> vec4f {
+    // 字形 LCD 分支需要「每像素的 uv 步长」。导数在分支外求：WGSL 的 uniform
+    // 分析会拒绝非一致控制流里的 dpdx。
+    let duv_dx = dpdx(i.uv.x);
+
     // kind == 3：已 CPU 三角化的多边形。**不采样纹理**，直接返回顶点色。
     //
     // ⚠ 必须排在图像分支之前 —— 图像分支的判据是 `kind > 1.5`，而 3 > 1.5，
@@ -18,22 +22,44 @@ fn shade_source(i: VsOut) -> vec4f {
         return i.color;
     }
 
-    // kind == 1：字形。图集存的是 SDF，覆盖率由 smoothstep 重建。
-    // `i.corner.x` 是排版端按当前字号算好的 smoothstep 半宽 `w`。
-    // 读 red 通道（CPU 参考光栅读同一个），不是 alpha。
+    // kind == 1：字形。采样方式由 `i.shape`（模式码，flat）决定：
+    //   0 = 旧覆盖率（读 alpha）；1 = 单通道 SDF（读 red）；
+    //   2 = MSDF（rgb 取中位数）；3/4 = MSDF + LCD 子像素（RGB/BGR）。
+    // `i.corner.x` 是 smoothstep 半宽 `w`，`i.corner.y` 是伪粗体阈值偏移。
     if (i.kind > 0.5 && i.kind < 1.5) {
-        let texel = textureSample(g_tex, g_smp, i.uv);
+        let mode = i.shape;
         let w = i.corner.x;
-        // w == 0 是替身/降级路径：退回旧的 alpha 覆盖率。
-        let coverage = select(
-            texel.a,
-            smoothstep(0.5 - w, 0.5 + w, texel.r),
-            w > 0.0
-        );
+        let emb = i.corner.y;
+        let texel = textureSample(g_tex, g_smp, i.uv);
+        var coverage = 0.0;
+        var out_rgb = i.color.rgb;
+
+        if (mode < 0.5) {
+            coverage = texel.a;
+        } else if (mode < 1.5) {
+            coverage = smoothstep(0.5 - w, 0.5 + w, texel.r);
+        } else if (mode < 2.5) {
+            let s = max(min(texel.r, texel.g), min(max(texel.r, texel.g), texel.b));
+            coverage = smoothstep(0.5 - w - emb, 0.5 + w - emb, s);
+        } else {
+            // LCD：沿 x 取三次 MSDF 样本。BGR 把偏移方向反过来。
+            let dir = select(-1.0, 1.0, mode < 3.5);
+            let subpix = duv_dx * dir / 3.0;
+            var cov = vec3f(0.0);
+            for (var k = 0; k < 3; k = k + 1) {
+                let off = (f32(k) - 1.0) * subpix;
+                let s3 = textureSample(g_tex, g_smp, i.uv + vec2f(off, 0.0)).rgb;
+                let sd = max(min(s3.r, s3.g), min(max(s3.r, s3.g), s3.b));
+                cov[k] = smoothstep(0.5 - w - emb, 0.5 + w - emb, sd);
+            }
+            // 当前管线用标量 alpha 混合，无法逐通道混合；保留 rgb 子像素差异。
+            coverage = (cov.r + cov.g + cov.b) / 3.0;
+            out_rgb = i.color.rgb * cov;
+        }
+
         let a = coverage * i.color.a;
         if (a - 0.0039 <= 0.0) { discard; }
-        // 预乘空间：`i.color.rgb` 在顶点展开时已乘过 `i.color.a`，这里再乘一次覆盖率。
-        return vec4f(i.color.rgb * coverage, a);
+        return vec4f(out_rgb * coverage, a);
     }
 
     // kind == 2：图像。采样当前批绑定的纹理（每批一种）。

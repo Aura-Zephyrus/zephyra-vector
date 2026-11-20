@@ -5,6 +5,10 @@
 /// 与混合模式**完全无关**。共用一份才不会出现「某个混合模式下的圆角矩形与
 /// 默认路径长得不一样」这类漂移。
 float4 ShadeSource(VSOut i) {
+    // 字形 LCD 分支需要「每像素的 uv 步长」。导数必须在分支**外**求：HLSL
+    // 对非一致控制流里的 ddx 会报警，而字形那一支虽是逐绘制常量，编译器不知道。
+    float duv_dx = ddx(i.uv.x);
+
     // kind == 5：**SVG 式像素偏移玻璃**（便宜版液态玻璃）。
     //
     // # 它为什么排第一
@@ -150,26 +154,52 @@ float4 ShadeSource(VSOut i) {
         return i.color;
     }
 
-    // kind == 1：字形。图集存的是有符号距离场（SDF），覆盖率由 smoothstep 重建。
+    // kind == 1：字形。采样方式由 `i.shape`（模式码，flat）决定：
+    //   0 = 旧覆盖率（读 alpha）；1 = 单通道 SDF（读 red）；
+    //   2 = MSDF（rgb 取中位数）；3/4 = MSDF + LCD 子像素（RGB/BGR）。
     //
-    // `i.corner.x` 是 smoothstep 在 SDF 值域上的半宽 `w`，由排版端按当前显示字号
-    // 算好：`w = AA_BAND / (2 · spread · (显示字号 / 基准字号))`。字号越大 w 越小，
-    // 于是过渡带在屏幕空间恒为约 1px —— 这才是「任意字号都锐利」的根据。
-    //
-    // ⚠ 读 **red** 通道而不是 alpha：图集四通道都写了同一份 SDF，但 alpha 在
-    // 旧 coverage 路径里另有含义；CPU 参考光栅（`cpu_raster.rs`）读同一个通道。
+    // `i.corner.x` 是 smoothstep 半宽 `w`，由排版端按当前显示字号算好：
+    // `w = AA_BAND / (2 · spread · (显示字号 / 基准字号))`。字号越大 w 越小，
+    // 于是过渡带在屏幕空间恒为约 1px —— 「任意字号都锐利」的根据。
+    // `i.corner.y` 是伪粗体阈值偏移（仅 MSDF/LCD 读）。
     if (i.kind > 0.5 && i.kind < 1.5) {
-        float4 texel = g_tex.Sample(g_smp, i.uv);
+        float mode = i.shape;
         float w = i.corner.x;
-        // w == 0 是替身/降级路径（没有真实 SDF 图集）：退回旧的 alpha 覆盖率。
-        float coverage = (w > 0.0)
-            ? smoothstep(0.5 - w, 0.5 + w, texel.r)
-            : texel.a;
+        float emb = i.corner.y;
+        float4 texel = g_tex.Sample(g_smp, i.uv);
+        float coverage = 0.0;
+        float3 out_rgb = i.color.rgb;
+
+        if (mode < 0.5) {
+            // 替身/降级：没有真实距离场，退回覆盖率位图。
+            coverage = texel.a;
+        } else if (mode < 1.5) {
+            coverage = smoothstep(0.5 - w, 0.5 + w, texel.r);
+        } else if (mode < 2.5) {
+            float s = max(min(texel.r, texel.g), min(max(texel.r, texel.g), texel.b));
+            coverage = smoothstep(0.5 - w - emb, 0.5 + w - emb, s);
+        } else {
+            // LCD：沿 x 取三次 MSDF 样本。BGR 把偏移方向反过来。
+            float dir = (mode < 3.5) ? 1.0 : -1.0;
+            float subpix = duv_dx * dir / 3.0;
+            float3 cov = 0;
+            [unroll]
+            for (int k = 0; k < 3; ++k) {
+                float off = (float(k) - 1.0) * subpix;
+                float3 s3 = g_tex.Sample(g_smp, i.uv + float2(off, 0.0)).rgb;
+                float sd = max(min(s3.r, s3.g), min(max(s3.r, s3.g), s3.b));
+                cov[k] = smoothstep(0.5 - w - emb, 0.5 + w - emb, sd);
+            }
+            // 当前管线用 One/InvSrcAlpha（标量 alpha），无法做逐通道混合。
+            // 保留 rgb 的子像素差异以得到 ClearType 效果，alpha 取三通道均值。
+            coverage = (cov.r + cov.g + cov.b) / 3.0;
+            out_rgb = i.color.rgb * cov;
+        }
+
         float a = coverage * i.color.a;
         clip(a - 0.0039);
-        // 预乘空间：`i.color.rgb` 在顶点展开时已乘过 `i.color.a`，这里再乘一次
-        // 覆盖率；漏掉会让 rgb 与 a 不同步。
-        return float4(i.color.rgb * coverage, a);
+        // 预乘空间：`i.color.rgb` 在顶点展开时已乘过 `i.color.a`，这里再乘一次覆盖率。
+        return float4(out_rgb * coverage, a);
     }
 
     // kind == 2：图像。采样当前绑定的纹理（每批一种）。
