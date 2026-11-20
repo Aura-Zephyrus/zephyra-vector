@@ -93,6 +93,9 @@ mod decoration_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/text/shadow_tests.rs"]
 mod shadow_tests;
+#[cfg(test)]
+#[path = "../../tests/unit/text/ellipsis_tests.rs"]
+mod ellipsis_tests;
 
 pub use atlas::{
     AtlasGlyph, AtlasRaster, AtlasStats, EntryInfo, EvictPlan, EvictionPolicy, GlyphAtlas,
@@ -344,6 +347,10 @@ pub struct TextStyle {
     ///
     /// 对应 CSS `word-spacing`，与 [`Self::letter_spacing`] 叠加。
     pub word_spacing: f32,
+    /// 最大行数；超出时截断末行并加省略号（SkParagraph `max_lines`）。
+    pub max_lines: Option<usize>,
+    /// 截断用的省略号；`None` 用 `"…"`。
+    pub ellipsis: Option<String>,
     /// OpenType 特性开关：`(四字节 tag, 值)`，如 `('t'<<24|'n'<<16|'u'<<8|'m', 1)` 开表格数字。
     ///
     /// 对应 Skia `SkShaper::Feature`。字体默认开启的特性（liga/kern/mark 等）
@@ -395,6 +402,8 @@ impl Default for TextStyle {
             strut: None,
             letter_spacing: 0.0,
             word_spacing: 0.0,
+            max_lines: None,
+            ellipsis: None,
             font_features: Vec::new(),
             text_align: TextAlign::Left,
             paragraph_spacing: 0.0,

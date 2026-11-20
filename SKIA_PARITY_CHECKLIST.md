@@ -52,9 +52,10 @@
 - [x] 测试 `tests/unit/text/decoration_tests.rs`（3 条）；全量 343 passed，commit `f3c709e`
 
 ### A4 — 文字阴影（第一档）
-- [ ] `TextStyle::shadow: Option<TextShadow>`（offset + color；blur 暂不做）
-- [ ] `stack.rs` 主字形 quad 前插偏移+改色副本，画在底下
-- [ ] 测试 + commit
+- [x] `TextShadow`（color/offset/blur_sigma，按 Skia TextShadow）+ `TextStyle::shadow`
+- [x] `GlyphQuad` 加 `color: Option<Color>` 覆盖；`render/quad.rs` 逐字形用它 —— 阴影副本独立颜色
+- [x] 阴影 quad 插在正文前；blur 用加宽 SDF smoothstep 带实现（无额外纹理/高斯）
+- [x] 测试 `tests/unit/text/shadow_tests.rs`（2 条）；全量 345 passed，commit `65d4c9f`
 
 ### A5 — 省略号 / max_lines（第一档）
 - [ ] `TextStyle::max_lines: Option<usize>`、`ellipsis: Option<String>`（默认 "…"）

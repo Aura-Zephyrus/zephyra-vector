@@ -433,6 +433,44 @@ impl<S: GlyphSource> TextStack<S> {
 
         let mut lines = self.layout(text, style, px_size, max_width);
 
+        // 最大行数：超出时截断，并在末行补省略号（SkParagraph 的 max_lines +
+        // ellipsis）。补之前先把放不下的尾字退掉，保证"正文 + 省略号"仍在
+        // max_width 内；否则截断后的行会比容器还宽。
+        if let Some(limit) = style.max_lines {
+            if lines.len() > limit {
+                lines.truncate(limit);
+                if let Some(last) = lines.last_mut() {
+                    let ell = style.ellipsis.as_deref().unwrap_or("…");
+                    let mut ell_glyphs = Vec::new();
+                    for run in self.source.shape(ell, style) {
+                        for g in run.glyphs {
+                            ell_glyphs.push(PlacedGlyph {
+                                glyph_id: g.glyph_id,
+                                font_id: g.font_id,
+                                offset: Point::new(g.offset.x, g.offset.y),
+                                advance: g.advance,
+                                color_glyph: g.color_glyph,
+                                embolden: g.embolden,
+                            });
+                        }
+                    }
+                    let ell_width: f32 = ell_glyphs.iter().map(|g| g.advance).sum();
+                    if let Some(max) = max_width {
+                        while !last.glyphs.is_empty() && last.width + ell_width > max {
+                            let removed = last.glyphs.pop().expect("非空");
+                            last.width = (last.width - removed.advance).max(0.0);
+                        }
+                    }
+                    for mut g in ell_glyphs {
+                        g.offset.x += last.width;
+                        last.width += g.advance;
+                        last.glyphs.push(g);
+                    }
+                    last.is_last = true;
+                }
+            }
+        }
+
         // 填基线与水平对齐：逐行下移一个行高，并按 text_align 给每行加 x 偏移。
         //
         // 对齐以 `max_width` 为容器宽度：Left=0, Center=0.5, Right=1。
