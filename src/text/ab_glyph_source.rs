@@ -480,7 +480,13 @@ impl GlyphSource for AbGlyphSource {
             return Vec::new();
         }
         let px_size = style.effective_size().max(1.0);
-        let scale = self.px_scale(px_size).x;
+        // rustybuzz 的位置是**字体单位**（upem），不是 hhea 行高单位。
+        // ab_glyph 的 `h_advance` 内部用的是 `px / upem`（见 scale.rs 的
+        // `h_scale_factor = scale.x / height_unscaled`，而 scale.x 已乘过
+        // `height_unscaled / upem`）。这里必须用同一个 px/upem，否则步进会
+        // 被放大 1.3 倍左右，长文本直接跑出屏幕。
+        let upem = self.font.units_per_em().unwrap_or(1000.0).max(1.0);
+        let scale = px_size / upem;
         let mut out = Vec::new();
         for (range, rtl) in bidi_runs(text, style.direction) {
             let run_text = &text[range];

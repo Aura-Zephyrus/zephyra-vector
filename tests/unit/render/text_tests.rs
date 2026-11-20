@@ -297,7 +297,8 @@ fn shaper_and_rasterizer_agree_on_glyph_ids() {
         size: 64.0,
         ..Default::default()
     };
-    for ch in ['A', 'H', 'g', '中'] {
+    // 只用字体确定覆盖的拉丁字符：缺字会走替换字形，步进比较没有意义。
+    for ch in ['A', 'H', 'g'] {
         let shaped = src.shape(&ch.to_string(), &style);
         let id = shaped
             .first()
@@ -307,6 +308,17 @@ fn shaper_and_rasterizer_agree_on_glyph_ids() {
             id,
             Some(src.glyph_id(ch)),
             "字符 {ch:?} 的整形/栅格化 glyph id 不一致"
+        );
+        // 步进也必须一致：整形用字体单位 × px/upem，ab_glyph 用同一个比例。
+        let shaped_advance: f32 = shaped
+            .iter()
+            .flat_map(|r| &r.glyphs)
+            .map(|g| g.advance)
+            .sum();
+        assert!(
+            (shaped_advance - src.advance(id.unwrap(), style.effective_size())).abs() < 0.01,
+            "字符 {ch:?} 的整形步进 {} 与 ab_glyph 步进不一致",
+            shaped_advance
         );
     }
 }
