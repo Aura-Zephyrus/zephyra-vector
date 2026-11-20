@@ -58,9 +58,9 @@
 - [x] 测试 `tests/unit/text/shadow_tests.rs`（2 条）；全量 345 passed，commit `65d4c9f`
 
 ### A5 — 省略号 / max_lines（第一档）
-- [ ] `TextStyle::max_lines: Option<usize>`、`ellipsis: Option<String>`（默认 "…"）
-- [ ] `stack.rs` 断行：超行数截断末行 + 插省略号；测量阶段把省略号宽度算进去防溢出
-- [ ] 测试 + commit
+- [x] `TextStyle::max_lines`、`ellipsis`（默认 "…"）；`shape_impl` 超限截断 + 末行补省略号，退字保证不超 max_width
+- [x] 测试 `tests/unit/text/ellipsis_tests.rs`（3 条）；全量 348 passed，commit `133b0ae`
+- [ ] 注意：已有的 `ellipsize()` 单行字符串函数保留（不同用途）
 
 ### A6 — MSDF error correction（第二档）
 - [ ] `src/text/msdf.rs`：对产生中位数的边，用像素到该边的真实有符号距离替换该通道值

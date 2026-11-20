@@ -16,8 +16,9 @@
 //!   三个通道一致，中位数就是真实距离。
 //! - 曲线按弦长均匀细分而非 msdfgen 的自适应细分。基准档最高 256px，分段数
 //!   足够让误差落到半个基准像素以下。
-//! - 不做 msdfgen 的"错误校正"后处理。上面那条回退策略已经把误差限制在中轴
-//!   附近；若测试暴露伪影，再加中点校正。
+//! - 错误校正是 msdfgen 的简化版：`error_correct` 检测相邻纹素间"中位通道在中途
+//!   切换"的插值伪影，把该类纹素的三个通道压到其中位值；中位通道不同的相邻
+//!   纹素视为拐角并保护，不参与压平（从而保留 MSDF 的尖角优势）。
 //!
 //! 这些取舍不影响 API：输入是轮廓线段 + 覆盖率位图，输出是 RGBA8（RGB = 三通道
 //! MSDF，A = 真实 SDF 灰度副本，便于把图集当图片看）。
@@ -231,6 +232,79 @@ fn assign_colors(segments: &[Segment], coverage: &[u8], w: u32, h: u32) -> Vec<u
         .collect()
 }
 
+/// msdfgen 错误校正的简化版：消除"中位通道在两纹素中途切换"造成的插值伪影。
+///
+/// 完整 msdfgen 会逐纹素检查 8 邻域的线性/双线性插值，用真实形状距离判定是否
+/// 需要校正。这里抓住同一个根因的轻量判据：若某纹素的中位通道 `c` 与邻居的中位
+/// 通道 `n` 不同，且二者在中点插值出的中位通道既不是 `c` 也不是 `n`，则这段插值
+/// 会走出"折线"而非单调过渡 ⇒ 把该纹素三通道压到中位值（等价于局部退化为单通道
+/// SDF）。中位通道不同的相邻纹素是拐角（颜色切换处），标记保护，不压平 —— 那正
+/// 是 MSDF 保留尖角的地方。
+pub fn error_correct(out: &mut [u8], width: usize, height: usize) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let median = |a: u8, b: u8, c: u8| a.max(b).min(c.max(a.min(b)));
+    let channels = |i: usize| [out[i], out[i + 1], out[i + 2]];
+    let median_channel = |c: [u8; 3]| -> usize {
+        let m = median(c[0], c[1], c[2]);
+        if c[0] == m {
+            0
+        } else if c[1] == m {
+            1
+        } else {
+            2
+        }
+    };
+
+    let mut marks = vec![false; width * height];
+    for y in 0..height {
+        for x in 0..width {
+            let i = (y * width + x) * 4;
+            let c = channels(i);
+            let mc = median_channel(c);
+            let mut corner = false;
+            let mut artifact = false;
+            for (dx, dy) in [(1isize, 0isize), (0, 1), (-1, 0), (0, -1)] {
+                let nx = x as isize + dx;
+                let ny = y as isize + dy;
+                if nx < 0 || ny < 0 || nx >= width as isize || ny >= height as isize {
+                    continue;
+                }
+                let j = (ny as usize * width + nx as usize) * 4;
+                let n = channels(j);
+                let nc = median_channel(n);
+                if nc != mc {
+                    corner = true;
+                }
+                let mid = [
+                    ((c[0] as u16 + n[0] as u16) / 2) as u8,
+                    ((c[1] as u16 + n[1] as u16) / 2) as u8,
+                    ((c[2] as u16 + n[2] as u16) / 2) as u8,
+                ];
+                let midc = median_channel(mid);
+                // 与 msdfgen 一致：一对里只标记"离边更远"的那个，避免成对压平
+                // 把整条平滑边磨掉。编码 127.5 对应轮廓边缘。
+                let farther_from_edge = (median(c[0], c[1], c[2]) as f32 - 127.5).abs()
+                    >= (median(n[0], n[1], n[2]) as f32 - 127.5).abs();
+                if farther_from_edge && midc != mc && midc != nc {
+                    artifact = true;
+                }
+            }
+            marks[y * width + x] = artifact && !corner;
+        }
+    }
+    for (k, &marked) in marks.iter().enumerate() {
+        if marked {
+            let i = k * 4;
+            let m = median(out[i], out[i + 1], out[i + 2]);
+            out[i] = m;
+            out[i + 1] = m;
+            out[i + 2] = m;
+        }
+    }
+}
+
 /// 生成带留白的 MSDF 缓冲：`(w + 2m) × (h + 2m)` 个 RGBA8 像素。
 ///
 /// `coverage` 是墨迹覆盖率（行宽 `w`），它同时提供"真实距离"回退与边的内外判定。
@@ -286,6 +360,7 @@ pub fn generate(
             out[idx * 4 + 3] = genuine[idx];
         }
     }
+    error_correct(&mut out, mw, mh);
     out
 }
 
@@ -382,5 +457,32 @@ mod tests {
             assert_eq!(px[0], px[1]);
             assert_eq!(px[1], px[2]);
         }
+    }
+
+    /// 制造一个"中位通道在中途切换"的纹素对：压平后该纹素三通道应相等，
+    /// 且值等于原中位数；拐角（邻居中位通道不同）则应原样保留。
+    #[test]
+    fn error_correction_flattens_artifacts_but_protects_corners() {
+        // 1×3：T0 与 T1 的中位通道都是 G，但两者中点插值的中位会切到 R/B。
+        // 只标记离边更远的 T1（G=130 ⇒ 离 127.5 更远），压平到中位值 130；
+        // T0 保留，T1 与 T2（同色）插值正常。
+        let mut buf = vec![
+            200, 128, 60, 128, // T0 中位 G=128
+            60, 130, 200, 128, // T1 中位 G=130（中点中位切到 R/B）
+            60, 130, 200, 128, // T2 中位 G=130
+        ];
+        error_correct(&mut buf, 3, 1);
+        assert_eq!(&buf[0..3], &[200, 128, 60]);
+        assert_eq!(&buf[4..7], &[130, 130, 130]);
+
+        // 2×2：T0 的右邻居中位通道是 B（与 T0 的 G 不同）⇒ 拐角，不压平。
+        let mut corner = vec![
+            200, 128, 60, 128, // T0 中位 G
+            100, 220, 150, 128, // T1 中位 B
+            100, 220, 150, 128,
+            100, 220, 150, 128,
+        ];
+        error_correct(&mut corner, 2, 2);
+        assert_eq!(&corner[0..3], &[200, 128, 60], "拐角纹素应原样保留");
     }
 }
