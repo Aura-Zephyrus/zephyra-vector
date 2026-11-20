@@ -1,0 +1,95 @@
+/// 算出这一片元的**预乘**源色（不含任何混合）。
+///
+/// 抽出来是因为「算出源色」这部分与混合模式**完全无关**，共用一份才不会出现
+/// 「某个混合模式下的圆角矩形与默认路径长得不一样」这类漂移。
+fn shade_source(i: VsOut) -> vec4f {
+    // kind == 3：已 CPU 三角化的多边形。**不采样纹理**，直接返回顶点色。
+    //
+    // ⚠ 必须排在图像分支之前 —— 图像分支的判据是 `kind > 1.5`，而 3 > 1.5，
+    // 于是每个三角形都会去采当前批次绑着的那张纹理。症状是多边形变成"别的
+    // 内容"且换批次就换颜色，看起来像随机噪声而不是错误。
+    //
+    // 阈值用 2.5（相邻两类的中点）：写 3.0 会把恰好等于 3.0 的多边形漏进图像分支。
+    //
+    // 抗锯齿：这里**没有**过渡带。三角化后的多边形没有解析距离场，覆盖率只能
+    // 来自 MSAA 的多点采样。
+    if (i.kind > 2.5) {
+        if (i.color.a - 0.0039 <= 0.0) { discard; }
+        return i.color;
+    }
+
+    // kind == 1：字形。图集存的是 SDF，覆盖率由 smoothstep 重建。
+    // `i.corner.x` 是排版端按当前字号算好的 smoothstep 半宽 `w`。
+    // 读 red 通道（CPU 参考光栅读同一个），不是 alpha。
+    if (i.kind > 0.5 && i.kind < 1.5) {
+        let texel = textureSample(g_tex, g_smp, i.uv);
+        let w = i.corner.x;
+        // w == 0 是替身/降级路径：退回旧的 alpha 覆盖率。
+        let coverage = select(
+            texel.a,
+            smoothstep(0.5 - w, 0.5 + w, texel.r),
+            w > 0.0
+        );
+        let a = coverage * i.color.a;
+        if (a - 0.0039 <= 0.0) { discard; }
+        // 预乘空间：`i.color.rgb` 在顶点展开时已乘过 `i.color.a`，这里再乘一次覆盖率。
+        return vec4f(i.color.rgb * coverage, a);
+    }
+
+    // kind == 2：图像。采样当前批绑定的纹理（每批一种）。
+    if (i.kind > 1.5) {
+        let texel = textureSample(g_tex, g_smp, i.uv);
+        var a = texel.a * i.color.a;
+        // ⚠ 圆角遮罩**必须**以 `corner.x > 0` 为条件，不能无条件施加。
+        //
+        // 圆角矩形的 SDF 在 `d == 0` 处正是矩形边界，于是
+        // `1 - smoothstep(-px, px, 0) == 0.5` —— 无条件施加会把最外一圈像素压到
+        // 50% alpha。症状是**图像四周发暗一圈**，而所有计数器正常。
+        if (i.corner.x > 0.0) {
+            let half_size = i.half_size;
+            let p = i.local - half_size;
+            let d = sd_round_rect(p, half_size, i.corner.x, i.shape);
+            let px_img = 0.75;
+            a = a * (1.0 - smoothstep(-px_img, px_img, d));
+        }
+        if (a - 0.0039 <= 0.0) { discard; }
+        return vec4f(texel.rgb * texel.a * i.color.rgb, a);
+    }
+
+    // kind == 0：SDF 圆角矩形。
+    let half_size = i.half_size;
+    let p = i.local - half_size;
+    let d = sd_round_rect(p, half_size, i.corner.x, i.shape);
+
+    // 1 像素过渡带：抗锯齿。带宽不随缩放变化，所以高 DPI 下边缘不会变毛糙。
+    let px = 0.75;
+    let alpha = 1.0 - smoothstep(-px, px, d);
+    if (alpha - 0.0039 <= 0.0) { discard; }
+
+    if (i.corner.y > 0.0) {
+        // 描边：距边界 stroke 宽度以内的环带。
+        //
+        // ⚠ 这里**不能**再取一次 `1.0 -`：`d < 0` 在内部、`d == 0` 在边界，环带
+        // 对应 `d ∈ [-width, 0]`；而 `smoothstep(inner-px, inner+px, d)` 在
+        // `d == 0` 取 1、在环带内侧取 0 —— 正是要的。再取一次会把整条环带翻过来：
+        // 越靠里越实、越靠边越透明，描边看起来变成一块实心填充。
+        let inner = -i.corner.y;
+        var sa = smoothstep(inner - px, inner + px, d);
+
+        // 外侧**必须**再乘一道淡出：`d > 0` 在环带之外，而 smoothstep 在那里
+        // 饱和为 1。四边形按 px（`AA_BAND`）向外扩过，缺这一道会让描边外侧多出
+        // 一圈实色 —— 症状是"描边比设定值粗一圈，且那一圈没有抗锯齿"。
+        let outer_fade = 1.0 - smoothstep(-px, px, d);
+        sa = sa * outer_fade;
+
+        if (sa - 0.0039 <= 0.0) { discard; }
+        return vec4f(i.color.rgb * sa, i.color.a * sa);
+    }
+    return vec4f(i.color.rgb * alpha, i.color.a * alpha);
+}
+
+/// 默认路径：源色交给**固定功能混合方程**（`SrcOver`，或 `runs` 段指定的系数对）。
+@fragment
+fn fs_main(i: VsOut) -> @location(0) vec4f {
+    return shade_source(i);
+}

@@ -415,6 +415,30 @@ impl Vertex {
         )
     }
 
+    /// SDF 字形四边形（`kind == GLYPH`）。
+    ///
+    /// 与 [`Self::from_uv_rect`] 的唯一差别是 `corner.x = w`：`w` 是
+    /// `smoothstep(0.5-w, 0.5+w, sampled.r)` 的半宽，由排版端按当前字号算好。
+    /// 四边形本身不扩：`dst` 已经覆盖了图集里含留白的整块区域。
+    pub fn from_sdf_rect(
+        rect: Rect,
+        px: (f32, f32),
+        color: [f32; 4],
+        uv: UvRect,
+        w: f32,
+    ) -> [Vertex; 4] {
+        Self::quad(
+            rect,
+            px,
+            color,
+            [w.max(1e-5), 0.0],
+            [uv.x, uv.y],
+            [uv.right(), uv.bottom()],
+            kind::GLYPH,
+            1.0,
+        )
+    }
+
     /// 带圆角的图像四边形（`kind == IMAGE`）。
     ///
     /// # 与 [`Self::from_uv_rect`] 的唯一差别：半径 > 0 时外扩 + **uv 外插**
@@ -1694,13 +1718,15 @@ pub fn expand_range_translated_into(
                             )
                         }
                     };
-                    out.solid.extend_from_slice(&Vertex::from_uv_rect(
-                        rect,
-                        px,
-                        rgba,
-                        uv,
-                        kind::GLYPH,
-                    ));
+                    if let Some(w) = g.sdf {
+                        out.solid.extend_from_slice(&Vertex::from_sdf_rect(
+                            rect, px, rgba, uv, w,
+                        ));
+                    } else {
+                        out.solid.extend_from_slice(&Vertex::from_uv_rect(
+                            rect, px, rgba, uv, kind::GLYPH,
+                        ));
+                    }
                     out.report.quads += 1;
                 }
                 // 整段文本记成一段：字形之间没有纹理/混合模式的变化，拆开只会让

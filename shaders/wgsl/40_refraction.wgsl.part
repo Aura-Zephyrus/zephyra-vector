@@ -1,0 +1,160 @@
+// ═══════════════════════════════════════════════════════════════════════════
+//  折射（液态玻璃）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+//  与 `zephyra/zephyra-base/zephyra-winit-d3d12/shaders/zephyra.hlsl` 的
+//  `PSRefraction` 逐项对应：两份手抄、同一份契约，契约本身由
+//  `zephyra-core/src/filter.rs` 的纯 Rust 镜像（`glass_surface_height` /
+//  `displacement` / `max_displacement`）钉住。
+//
+//  # 与模糊的本质区别
+//
+//  模糊读 `g_tex`（离屏 RT，里面**只有这个元素自己**）；折射读 `g_dst`
+//  （目标副本 = 元素**背后**已经画在屏幕上的画面）。两者是不同的纹理，
+//  所以宿主必须在合成**之前**先取目标副本 —— `renderer.rs` 的
+//  `record_offscreen` 第 3 步。时机错了（采到元素自己）的症状是
+//  「玻璃边缘把元素自己的轮廓糊开」，那看起来像接线错误而不是参数问题。
+//
+//  # 顶点字段约定（与模糊 / 合成**不同**，表见 `zephyra_fx::offscreen` 的
+//  `refraction_composite_quad` 文档）
+//
+//  | 字段        | 含义 |
+//  |-------------|------|
+//  | `local`     | **元素内**的像素坐标（算 SDF 用）|
+//  | `half_size` | **元素**的半宽半高（flat）|
+//  | `uv`        | 元素内归一化坐标 |
+//  | `corner.x`  | 圆角半径 |
+//  | `corner.y`  | 玻璃厚度（**像素**）|
+//  | `color.r`   | 色散量 |
+//  | `color.g`   | 倒角带宽度（像素）|
+//  | `color.b`   | 折射率 IOR |
+//
+//  屏幕 uv 走 `dst_uv(i)`（从 `ndc` 推），不占顶点字段。
+
+/// HLSL 的 `saturate` 在 WGSL 里没有同名内置，包一层。
+fn saturate(x: f32) -> f32 {
+    return clamp(x, 0.0, 1.0);
+}
+
+/// `saturate` 的向量版（HLSL 的 saturate 对向量逐分量生效）。
+fn saturate2(v: vec2f) -> vec2f {
+    return clamp(v, vec2f(0.0, 0.0), vec2f(1.0, 1.0));
+}
+
+/// 玻璃的**高度剖面**：`t` = 倒角带里的归一化深度。
+///
+/// 一条圆拱的四次方根：`t = 0` 在边缘（高度 0），`t = 1` 在带内侧（高度 1）。
+/// 关键在它在 `t → 0` 处**斜率发散** —— 那正是「光在边缘斜着进出」的数学表达。
+fn glass_surface_height(t: f32) -> f32 {
+    let s = 1.0 - t;
+    return pow(1.0 - s * s * s * s, 0.25);
+}
+
+/// 圆角矩形 SDF 的**单位外法线**。
+///
+/// 有限差分而不是解析梯度：解析式要在「直边区」与「圆角区」之间分支，两段公式
+/// 不同，分支写错**不会报错**、只会让某一侧折射方向相反。4 次 SDF 求值无分支。
+/// 步长 0.75 与 `AA_BAND` 同量级 —— 再小被浮点噪声淹没，再大在 1px 边缘上
+/// 跨过整个直边区、梯度失真。
+fn sd_normal(p: vec2f, half_size: vec2f, radius: f32, shape_k: f32) -> vec2f {
+    let e = 0.75;
+    var g: vec2f;
+    g.x = sd_round_rect(p + vec2f(e, 0.0), half_size, radius, shape_k)
+        - sd_round_rect(p - vec2f(e, 0.0), half_size, radius, shape_k);
+    g.y = sd_round_rect(p + vec2f(0.0, e), half_size, radius, shape_k)
+        - sd_round_rect(p - vec2f(0.0, e), half_size, radius, shape_k);
+    let len = length(g);
+    if (len > 1e-5) { return g / len; }
+    return vec2f(0.0, 0.0);
+}
+
+/// 折射合成：把元素**背后**的画面按边缘法线推开后显示出来。
+///
+/// ⚠ 输出的是**被扰动的背景**，不是这个元素本身 —— 所以宿主必须在这趟之后
+/// 再把原命令照常画一遍（`OffscreenPass::redraw_original`，由 fx 侧置位）。
+/// 漏了那一步的症状是「玻璃上的描边和文字消失了」。
+@fragment
+fn fs_refraction(i: VsOut) -> @location(0) vec4f {
+    let radius = i.corner.x;
+    let strength = i.corner.y;   // 玻璃厚度（像素）
+    let dispersion = i.color.r;  // 色散量
+
+    // 元素内坐标 → SDF（矩形内为负）。
+    let p = i.local - i.half_size;
+    let d = sd_round_rect(p, i.half_size, radius, i.shape);
+
+    // ⚠ 元素**外**（d > 0）必须完全不输出：那里的背景没有被任何东西遮挡，
+    // 位移它只会凭空撕裂画面。
+    //
+    // ⚠⚠ `edge` 必须是 1px 量级的抗锯齿带，**不能**按元素尺寸取
+    // （`min(half_size) * 0.5` 那一版）：遮罩是**乘**在位移上的，而位移最大
+    // 的地方恰好是 `d → 0`（边缘）—— 那一版在边缘正好是 0，「最强的折射」
+    // 被「最弱的遮罩」乘成 0。实测（220×120 玻璃块，默认档）：宽遮罩的可见
+    // 位移峰值只有 ~2px，1px 窄遮罩后同一处 ~13px，差 6 倍。
+    let edge = 1.0;
+    let mask = saturate(-d / edge);
+
+    let n = sd_normal(p, i.half_size, radius, i.shape);
+
+    // 像素位移 → uv 位移。屏幕尺寸走 `dpdx/dpdy`，**不占顶点字段** ——
+    // 加字段会让 `Vertex` 从 52 涨到 56 字节，进而要同步改两个后端的
+    // 顶点布局。`dst_uv` 对 NDC 线性，所以逐像素增量就是「一个像素多少 uv」。
+    let uv = dst_uv(i);
+    let px2uv = vec2f(dpdx(uv.x), dpdy(uv.y));
+
+    // ---- 位移：斯涅尔定律 ----
+    //
+    // 三步：① 深度归一化 `t`（只在倒角带内 0..1）→ ② 高度剖面求斜率
+    // → ③ 入射角与斯涅尔角之**差**。位移因此在深度上先增后减（近边缘几乎
+    // 不弯、倒角带中段最弯、带内侧回 0），而 `IOR = 1` 时偏折角为 0、
+    // 位移恰好为 0 —— 后者是判据里的反向断言。
+    //
+    // ⚠⚠ 倒角带宽度**不按圆角半径夹**：玻璃的边缘是「倒角平面 + 圆角」，
+    // 倒角面比圆角宽是正常的；按半径夹会让倒角参数的上 3/4 变成空档
+    // （「调大了没反应」）。只按半边长夹。
+    let bezel = min(max(i.color.g, 1.0), min(i.half_size.x, i.half_size.y));
+    let t = saturate(-d / bezel);
+
+    // 斜率用**有限差分**：高度剖面在 t→0 处导数无界，解析式开方会在那里
+    // 发散成 NaN，而 NaN 把整个像素变成不可见的黑点。
+    let dt = 0.001;
+    let h = glass_surface_height(t);
+    let dh = (glass_surface_height(saturate(t + dt)) - h) / dt;
+
+    let slope = atan(dh * (strength / bezel));
+    let sin_r = clamp(sin(slope) / max(i.color.b, 1e-3), -1.0, 1.0);
+    let theta_r = asin(sin_r);
+
+    // ---- 位移量：楔形棱镜的偏折 ----
+    //
+    // ⚠⚠ 不能**用薄棱镜近似 `h * (tan(Θs) - tan(Θr))`：那条式子只在小角度
+    // 成立，而 `Θs` 常接近 90°（剖面在 t→0 处斜率发散），`tan(Θs)` 发散。
+    // 实测默认参数下位移峰值 491px（最大参数 2181px），而「位移不超过厚度」
+    // 的标称值是 28px —— 玻璃边缘把几百像素外的内容拉进来。
+    //
+    // 有界的楔形偏折式 `δ = h · sin(Δ) / cos(Θr)` 在 `Θs → 90°` 时趋于 `h`
+    // 而不是 ∞，且**恒有 δ ≤ h** —— 「位移不超过厚度」由公式本身保证。
+    // （liquid-glass 网页 demo 的 WebGL 版用的正是被换掉的薄棱镜近似。）
+    let displacement = h * strength * (sin(slope - theta_r) / max(cos(theta_r), 1e-3));
+
+    // 方向 = **-**SDF 外法线：透射取的是「背后那个点的光」。
+    let off_uv = -n * displacement * px2uv;
+
+    // 色散：R / B 相对 G 沿法线拉开不同比例，边缘出现彩色描边。
+    // `dispersion = 0` 时三条通道偏移相同，等于无色散。
+    let uv_r = saturate2(uv + off_uv * (1.0 + dispersion));
+    let uv_g = saturate2(uv + off_uv);
+    let uv_b = saturate2(uv + off_uv * (1.0 - dispersion));
+
+    let d_g = textureSampleLevel(g_dst, g_smp, uv_g, 0.0);
+    let bg = vec3f(
+        textureSampleLevel(g_dst, g_smp, uv_r, 0.0).r,
+        d_g.g,
+        textureSampleLevel(g_dst, g_smp, uv_b, 0.0).b,
+    );
+
+    // `g_dst` 是预乘的，所以覆盖率取 alpha，rgb 不再乘 —— 与 `fs_composite`
+    // 直通分支同一纪律。
+    let a = d_g.a * mask;
+    return vec4f(bg * a, a);
+}

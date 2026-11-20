@@ -3,25 +3,42 @@
 
 use super::*;
 
+/// 把测试用的原始字节放进带 SDF 留白的缓冲：墨迹字节值原样保留，留白填 0。
+fn padded(ink: &[u8], w: u32, h: u32) -> Vec<u8> {
+    let (pad, mw) = (SDF_PADDING as usize, (w + 2 * SDF_PADDING) as usize);
+    let mut out = vec![0u8; mw * (h + 2 * SDF_PADDING) as usize];
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            out[(y + pad) * mw + x + pad] = ink[y * w as usize + x];
+        }
+    }
+    out
+}
+
 /// 构造一个全不透明的 `AtlasRaster`。
 fn raster(w: u32, h: u32, offset: Point) -> AtlasRaster {
+    let ink = vec![255u8; (w * h) as usize];
     AtlasRaster {
         offset,
         width: w,
         height: h,
-        coverage: vec![255u8; (w * h) as usize],
+        sdf: padded(&ink, w, h),
+        spread: SDF_SPREAD,
+        base_px: SDF_BASE_PX as f32,
     }
 }
 
 /// 只有一个像素非零的 `AtlasRaster` —— 用于验证落盘位置。
 fn sparse_raster(w: u32, h: u32, offset: Point, value: u8) -> AtlasRaster {
-    let mut coverage = vec![0u8; (w * h) as usize];
-    coverage[0] = value;
+    let mut ink = vec![0u8; (w * h) as usize];
+    ink[0] = value;
     AtlasRaster {
         offset,
         width: w,
         height: h,
-        coverage,
+        sdf: padded(&ink, w, h),
+        spread: SDF_SPREAD,
+        base_px: SDF_BASE_PX as f32,
     }
 }
 
@@ -293,7 +310,9 @@ fn packed_pixels_land_at_the_allocated_position() {
         offset: Point::new(0.0, 0.0),
         width: 1,
         height: 1,
-        coverage: vec![7],
+        sdf: padded(&[7], 1, 1),
+        spread: SDF_SPREAD,
+        base_px: SDF_BASE_PX as f32,
     };
     atlas_up.get_or_insert(0, 1, 16, Some(filler)).unwrap();
     let e2 = atlas_up
@@ -335,7 +354,9 @@ fn interior_pixels_keep_their_position_inside_the_bitmap() {
                 offset: Point::new(3.0, 22.0),
                 width: 4,
                 height: 4,
-                coverage,
+                sdf: padded(&coverage, 4, 4),
+                spread: SDF_SPREAD,
+                base_px: SDF_BASE_PX as f32,
             }),
         )
         .unwrap();
@@ -376,7 +397,14 @@ fn oversized_coverage_is_clipped_not_written_out_of_bounds() {
                 offset: Point::new(0.0, 0.0),
                 width: 4,
                 height: 4,
-                coverage,
+                // 保留"声称 4×4 却给了 36 字节"的越界输入。
+                sdf: {
+                    let mut v = padded(&coverage[..16], 4, 4);
+                    v.extend_from_slice(&[255u8; 32]);
+                    v
+                },
+                spread: SDF_SPREAD,
+                base_px: SDF_BASE_PX as f32,
             }),
         )
         .unwrap();
@@ -436,7 +464,7 @@ fn inked(atlas: &GlyphAtlas) -> usize {
 // 留白：双线性采样会摸到紧邻的一格，所以墨的四周必须留透明
 // ========================================================================
 
-/// 两个相邻字形之间必须隔出 `2 × GLYPH_PADDING` 列**透明**像素。
+/// 两个相邻字形之间必须隔出 `2 × SDF_PADDING` 列**透明**像素。
 ///
 /// 没有留白时，片元在四边形最外沿采样会各取一半邻居的纹素 —— 画面上是字与字
 /// 之间的淡竖条、圆角处的鬼影。这个测试直接钉住那几格的值。
@@ -455,7 +483,7 @@ fn transparent_gap_between_adjacent_glyphs() {
 
     assert_eq!(
         bx,
-        ax + 4 + 2 * GLYPH_PADDING,
+        ax + 4 + 2 * SDF_PADDING,
         "第二个字的墨应当让开「本字右边一圈 + 邻字左边一圈」"
     );
     assert_eq!(
@@ -484,8 +512,8 @@ fn transparent_gap_between_adjacent_glyphs() {
     );
 
     // 上下也要留：四边形上下沿的采样同样会越界。
-    let above = ay - GLYPH_PADDING;
-    let below = ay + 4 + GLYPH_PADDING - 1;
+    let above = ay - SDF_PADDING;
+    let below = ay + 4 + SDF_PADDING - 1;
     for x in ax..ax + 4 {
         assert_eq!(alpha(&atlas, x, above), 0, "字上方的一圈不是空的");
         assert_eq!(alpha(&atlas, x, below), 0, "字下方的一圈不是空的");
@@ -507,16 +535,16 @@ fn padding_leaves_exported_uv_and_size_unchanged() {
     assert_eq!(e.uv.width, 4.0, "uv 宽度必须是墨的宽度");
     assert_eq!(e.uv.height, 3.0, "uv 高度必须是墨的高度");
     // uv 的左上是墨的左上，不是留白的左上。
-    assert_eq!(e.uv.x, GLYPH_PADDING as f32);
-    assert_eq!(e.uv.y, GLYPH_PADDING as f32);
+    assert_eq!(e.uv.x, SDF_PADDING as f32);
+    assert_eq!(e.uv.y, SDF_PADDING as f32);
 }
 
 // ========================================================================
 // LRU 淘汰
 // ========================================================================
 
-/// 64×64 的图集、8×8 的墨（占 10×10）恰好装 3×3 = 9 个。
-const SMALL: u32 = 64;
+/// SDF 图集：8×8 的墨 + 两圈 SDF 留白 = 24×24，6×6 = 36 个需要 144px。
+const SMALL: u32 = 160;
 
 /// 用满一张小图集（**不**触发淘汰），返回它。
 ///
@@ -531,9 +559,9 @@ fn fill_small() -> GlyphAtlas {
     }
     assert_eq!(atlas.stats().evictions, 0, "还没满就不该淘汰");
     assert_eq!(atlas.stats().glyphs, 36);
-    // 「满了」的判据：连一个 10×10（墨 + 两圈留白）都放不下了。
+    // 「满了」的判据：连一个 24×24（墨 + 两圈 SDF 留白）都放不下了。
     assert!(
-        atlas.remaining_height() < 10,
+        atlas.remaining_height() < 24,
         "36 个之后应当已经放不下第 37 个，实得剩余 {}",
         atlas.remaining_height()
     );
@@ -621,7 +649,9 @@ fn survivor_uvs_do_not_overlap_and_point_to_own_bitmap() {
                     offset: Point::new(0.0, 0.0),
                     width: 8,
                     height: 8,
-                    coverage,
+                    sdf: padded(&coverage, 8, 8),
+                    spread: SDF_SPREAD,
+                    base_px: SDF_BASE_PX as f32,
                 }),
             )
             .unwrap_or_else(|| panic!("第 {n} 个应当放得下"));
@@ -855,10 +885,11 @@ fn policy_receives_real_atlas_edge_and_slot_size() {
         SMALL,
         "策略必须拿到本图集的真实边长，而不是全局 ATLAS_SIZE"
     );
-    // 8×8 的墨 + 两侧各1 像素留白 = 10×10。
+    // 8×8 的墨 + 两侧各 SDF_PADDING 像素留白。
+    let expect = 8 + 2 * SDF_PADDING;
     assert_eq!(
         LAST_NEED.with(|n| n.get()),
-        (10, 10),
+        (expect, expect),
         "need 必须是**占位**尺寸（含留白），不是墨的尺寸"
     );
 }
@@ -958,7 +989,7 @@ impl EvictionPolicy for KeepJust {
 /// 而测试误判成"图集没采纳策略"。两次都是前提算错，不是实现问题。
 #[test]
 fn reflow_order_comes_from_policy_not_the_atlas() {
-    const TINY: u32 = 32;
+    const TINY: u32 = 96;
     let mut atlas = GlyphAtlas::with_size(TINY);
     // 两个高矮不同的字形（含留白后 10×22 与 10×14），再加一个填充物把图集占满。
     atlas
@@ -967,8 +998,8 @@ fn reflow_order_comes_from_policy_not_the_atlas() {
     atlas
         .get_or_insert(0, 1, 16, Some(raster(8, 20, Point::new(0.0, 0.0))))
         .unwrap();
-    // 用一串窄字形把第一行填满，逼得后来的字形必须换行。
-    for n in 10..14u32 {
+    // 用一串窄字形填满多行，逼得后来的字形必须触发淘汰。
+    for n in 10..20u32 {
         atlas
             .get_or_insert(0, n, 16, Some(raster(8, 6, Point::new(0.0, 0.0))))
             .unwrap();
@@ -1006,7 +1037,7 @@ fn reflow_order_comes_from_policy_not_the_atlas() {
              实得 x(n=2)={x2}、x(n=1)={x1}。若 n=2 反而在右，说明图集自己按高度降序重排了"
     );
     // 策略没提名的那些（填充物）应当被丢。
-    for n in 10..14u32 {
+    for n in 10..20u32 {
         assert!(
             atlas.get(0, n, 16).is_none(),
             "字形 {n} 不在策略的幸存者名单里，应当被丢"

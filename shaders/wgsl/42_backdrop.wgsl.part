@@ -1,0 +1,50 @@
+// ═══════════════════════════════════════════════════════════════════════════
+//  背景模糊（磨砂玻璃）—— 与 HLSL 的 `PSBackdropBlur` 手抄对应
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 与 `fs_refraction` 共用同一套顶点字段约定与同一张 `g_dst`，区别只在采样方式：
+// 折射按 SDF 法线**位移**，本入口对背景做**各向同性高斯卷积**（不位移）。σ 塞在
+// `corner.y`、圆角半径在 `corner.x`。
+//
+// 单趟二维卷积而不是 H / V 两趟：背景模糊读 `g_dst`（屏幕副本），拿不到元素
+// 自身那条乒乓 RT，也不该为它另建一套。用截半径 + 步长抽样把每轴压到 ~13 个采样。
+@fragment
+fn fs_backdrop_blur(i: VsOut) -> @location(0) vec4f {
+    let radius = i.corner.x;
+    let sigma = i.corner.y;
+
+    // 元素内坐标 → SDF → 1px 抗锯齿遮罩（与折射同一条纪律：元素外不输出）。
+    let p = i.local - i.half_size;
+    let d = sd_round_rect(p, i.half_size, radius, i.shape);
+    let mask = saturate(-d / 1.0);
+
+    let uv = dst_uv(i);
+    let px2uv = vec2f(dpdx(uv.x), dpdy(uv.y));
+
+    // 核半径：3σ 截到 12；步长把每轴抽样压到 ≤ ~13 个。
+    let r = min(ceil(3.0 * sigma), 12.0);
+    let stride = max(1.0, r / 6.0);
+
+    var sum = vec4f(0.0, 0.0, 0.0, 0.0);
+    var wsum = 0.0;
+    // 上界写死 12（r 已截到 12），循环次数有界。WGSL 要求循环边界可静态展开，
+    // 所以用常量区间 + 内部 `continue` 跳过超出 r 的项。
+    for (var ky = -12; ky <= 12; ky = ky + 1) {
+        let fy = f32(ky) * stride;
+        if (abs(fy) > r) { continue; }
+        for (var kx = -12; kx <= 12; kx = kx + 1) {
+            let fx = f32(kx) * stride;
+            if (abs(fx) > r) { continue; }
+            let w = gauss_weight(fy, sigma) * gauss_weight(fx, sigma);
+            let suv = saturate2(uv + vec2f(fx, fy) * px2uv);
+            sum = sum + textureSampleLevel(g_dst, g_smp, suv, 0.0) * w;
+            wsum = wsum + w;
+        }
+    }
+    if (wsum <= 0.0) { return vec4f(0.0, 0.0, 0.0, 0.0); }
+    let bg = sum / wsum;
+    // `g_dst` 预乘：覆盖率取 alpha，rgb 不再乘。遮罩同时缩 rgb 与 alpha，
+    // 保持预乘不变量（rgb ≤ a）。
+    let a = bg.a * mask;
+    return vec4f(bg.rgb * mask, a);
+}

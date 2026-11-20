@@ -1,0 +1,100 @@
+// ZephyraUI 的单一渲染着色器（**WGSL**）—— Linux/Vulkan 侧的等价物。
+//
+// 与 `zephyra/zephyra-base/zephyra-winit/shaders/zephyra.hlsl` 是同一份着色器的
+// 两个方言。两个文件必须**逐项对应**，对应关系有四条：
+//
+// 1. 顶点字段顺序 / 偏移 / `kind` 阈值 ↔ `zephyra_fx::quad::Vertex`；
+// 2. `kind` 的四个取值（0 矩形 / 1 字形 / 2 图像 / 3 多边形 / 4 模糊 pass）；
+// 3. `PSMain` 的三个分支阈值（0.5 / 1.5 / 2.5）与 SDF 的 `px = 0.75`；
+// 4. 模糊的半径公式 `min(ceil(3σ), 32)` 与四通道一起卷积；
+// 5. `fs_refraction` ↔ `PSRefraction`：位移公式、遮罩宽度、色散通道分配
+//    逐项一致（契约本身由 `zephyra-core/src/filter.rs` 的纯 Rust 镜像钉住）。
+//
+// # 为什么是「抄一份」而不是「编译一份」
+//
+// D3D 与 Vulkan 的着色器语言不同（HLSL vs WGSL），没有共同的中间表示能同时喂给
+// 两条 API。所以这里选择**两份手写 + 逐条对应 + 用像素对照测试钉住**，而不是
+// 引入 naga/fxc 之类的交叉编译链：
+//
+// - 交叉编译要多一个工具链依赖（且 fxc 只在 Windows 上有，Linux 上根本编不出
+//   HLSL 那份），换来的是「同一份源」这一**已经由对照测试提供**的性质；
+// - 漂移的症状是「某个混合模式算错」或「边缘宽度不对」—— 两者都由
+//   `tests/backend_parity.rs`（Windows 侧）与本 crate 的 `blend_coefficients` /
+//   `kind_thresholds` 纯逻辑测试钉住，不靠"两份文件一样"这句承诺。
+//
+// # 与 HLSL 的三处语言差异（都记在这里，免得下次重新踩）
+//
+// - `clip(x)` → `if (x <= 0.0) { discard; }`（WGSL 没有 clip）；
+// - `lerp` → `mix`；
+// - 模糊里必须用 `textureSampleLevel`（显式 LOD）而不是 `textureSample`：
+//   循环 + `break` 是**非一致控制流**，而 `textureSample` 要求一致控制流。
+
+struct VsIn {
+    @location(0) position: vec2f,
+    @location(1) local: vec2f,
+    @location(2) uv: vec2f,
+    @location(3) color: vec4f,
+    /// x = 圆角半径（DIP），y = 描边宽度（DIP）；模糊 pass 里是 (方向, σ)。
+    @location(4) corner: vec2f,
+    /// 四边形半宽半高；模糊 pass 里是源 RT 的尺寸。
+    @location(5) half_size: vec2f,
+    /// 0 = SDF 矩形，1 = 字形，2 = 图像，3 = 多边形，4 = 模糊 pass。
+    @location(6) kind: f32,
+    /// 角形状 K（CSS corner-shape / superellipse）：1=round, 2=squircle。
+    @location(7) shape: f32,
+};
+
+struct VsOut {
+    @builtin(position) clip: vec4f,
+    @location(0) local: vec2f,
+    @location(1) uv: vec2f,
+    @location(2) color: vec4f,
+    @location(3) corner: vec2f,
+    /// `@interpolate(flat)` 对应 HLSL 的 `nointerpolation`。
+    ///
+    /// 整个四边形要么全是一类要么全不是：逐片元插值会在四边形内部产生中间值，
+    /// 导致部分像素走错分支（"图标变成纯色块" / "字变成方块"）。
+    @location(4) @interpolate(flat) kind: f32,
+    /// `half_size` 在片元里必须**精确**（它参与 `abs(p) - half_size` 的相减），
+    /// 所以同样 flat。四个顶点填的是同一个值，插值本来也精确；标出来是为了让
+    /// 这件事在代码里显式。
+    @location(5) @interpolate(flat) half_size: vec2f,
+    /// 原始 NDC 位置。用途只有一个：采样 `g_dst` 时需要**屏幕 uv**。
+    @location(6) ndc: vec2f,
+    /// 角形状 K（corner-shape），flat。
+    @location(7) @interpolate(flat) shape: f32,
+};
+
+// group 0：主通道只需要「一张纹理 + 一个采样器」。模糊 / 合成 pass 也用同一个
+// 布局，所以它们与主通道共享同一批 bind group。
+@group(0) @binding(0) var g_tex: texture_2d<f32>;
+@group(0) @binding(1) var g_smp: sampler;
+// group 1：可分离 / 非可分离混合模式要读**目标**。单独一个 group，于是只用
+// group 0 的那些 pass 不必绑一张多余的纹理。
+@group(1) @binding(0) var g_dst: texture_2d<f32>;
+
+@vertex
+fn vs_main(i: VsIn) -> VsOut {
+    var o: VsOut;
+    o.clip = vec4f(i.position, 0.0, 1.0);
+    o.local = i.local;
+    o.uv = i.uv;
+    o.color = i.color;
+    o.corner = i.corner;
+    o.kind = i.kind;
+    o.half_size = i.half_size;
+    o.ndc = i.position;
+    o.shape = i.shape;
+    return o;
+}
+
+/// 目标像素的屏幕 uv（与 `quad::expand` 里 `to_ndc` 的 y 方向相反）。
+///
+/// NDC 的 y 向上、纹理 uv 的 y 向下，所以是 `0.5 - y*0.5`。
+/// 写反的症状是"混合效果整体上下颠倒"，且只在 `dst` 与源不同时才看得出来。
+fn dst_uv(i: VsOut) -> vec2f {
+    return vec2f(i.ndc.x * 0.5 + 0.5, 0.5 - i.ndc.y * 0.5);
+}
+
+/// 圆角矩形的有符号距离：矩形内为负，外部为正。
+/// shape_k = CSS corner-shape / superellipse(K)（1=round, 2=squircle）。

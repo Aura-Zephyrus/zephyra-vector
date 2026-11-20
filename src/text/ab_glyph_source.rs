@@ -54,6 +54,7 @@
 //! 跳过 —— **图集全空，屏幕上字完全不出现**。见 `zephyra/src/text/atlas.rs` 里的修正，
 //! 以及 `zephyra/src/text/atlas_tests.rs` 里用假字形来源钉死的契约测试。
 use crate::core::Point;
+use crate::text::sdf::{from_coverage, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD};
 use crate::text::{AtlasRaster, GlyphSource, TextStack};
 use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont};
 
@@ -288,7 +289,9 @@ impl GlyphSource for AbGlyphSource {
     }
 
     fn rasterize(&mut self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster> {
-        let px = px_size.max(1) as f32;
+        // `px_size` 是排版端按显示字号选好的 SDF 基准档位（64/128/256）。
+        // 大字号用高档位，避免单通道 SDF 过度放大导致笔画变钝、圆角被抹平。
+        let px = px_size.max(SDF_BASE_PX) as f32;
         let id = GlyphId(glyph_id.min(u16::MAX as u32) as u16);
         // em → 行高换算必须走同一个入口：`outline_glyph` 用的是 **Glyph 自带**的
         // scale（见 `ScaleFont::outline_glyph` 的注释「does not make use of the
@@ -353,7 +356,10 @@ impl GlyphSource for AbGlyphSource {
             offset: Point::new(bounds.min.x.floor(), bounds.min.y.floor()),
             width: w,
             height: h,
-            coverage,
+            // 覆盖率 → 有符号距离场；`from_coverage` 自带 SDF_PADDING 留白。
+            sdf: from_coverage(&coverage, w, h, SDF_PADDING),
+            spread: SDF_SPREAD,
+            base_px: px,
         })
     }
 

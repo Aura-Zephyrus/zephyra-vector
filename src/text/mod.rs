@@ -49,9 +49,11 @@ use crate::paint::{GlyphQuad, TextureRef};
 
 pub mod ab_glyph_source;
 pub mod atlas;
+pub mod sdf;
 pub mod stack;
 
 pub use ab_glyph_source::{from_font_file, from_system_font, AbGlyphSource, FONT_OVERRIDE_ENV};
+pub use sdf::{sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD, SDF_TIERS};
 
 /// `GlyphAtlas` 的**坐标契约**测试。
 ///
@@ -90,13 +92,15 @@ pub trait GlyphSource {
     /// 单个字形的步进宽度（DIP）。
     fn advance(&mut self, glyph_id: u32, px_size: f32) -> f32;
 
-    /// 栅格化一个字形到 8 位覆盖率位图。
+    /// 栅格化一个字形为 8 位**有符号距离场**（SDF）。
     ///
-    /// 返回 `None` = 空白字形（空格、零宽字符）—— 它们没有位图，但**有**步进，
-    /// 所以排版仍要为它们让出空间。
+    /// `px_size` 是**栅格化基准字号**，不是显示字号：SDF 与字号无关，所有显示
+    /// 字号共用一套位图。[`super::SDF_BASE_PX`] 是推荐值，调用方每次都传它。
+    /// 保留这个参数是为了让图集键仍能标明"这份位图是按什么基准生成的"。
     ///
-    /// 实现提示：直接用字体库自己的回调（`ab_glyph` 的 `OutlinedGlyph::draw`）
-    /// 写进返回值的 `coverage` 缓冲即可，不需要额外中间层。
+    /// 返回值里 `sdf` 的第 `(0,0)` 像素是留白区左上角，墨迹从
+    /// `(SDF_PADDING, SDF_PADDING)` 开始；`width`/`height` 是**墨迹**尺寸。
+    /// `None` = 空白字形（空格、零宽字符）—— 它们没有位图，但**有**步进。
     fn rasterize(&mut self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster>;
 
     /// 该来源在图集里的字体 id。同一份字节的多次加载必须返回**相同**的 id ——
@@ -500,6 +504,8 @@ pub fn quads_from_shaped(
                     size.height,
                 ),
                 color_glyph: g.color_glyph,
+                // 替身没有图集，走旧的覆盖率路径（uv 指向 (0,0) 那个像素）。
+                sdf: None,
             });
         }
     }

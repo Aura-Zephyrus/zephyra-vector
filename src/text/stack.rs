@@ -21,8 +21,9 @@ use crate::core::{Point, Rect, Size, UvRect};
 use crate::paint::{GlyphQuad, TextureRef};
 
 use super::{
-    atlas::AtlasRaster, GlyphAtlas, GlyphSource, Line, PlacedGlyph, ShapedText, TextAlign,
-    TextRender, TextStyle,
+    atlas::AtlasRaster,
+    sdf::{from_coverage, sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD},
+    GlyphAtlas, GlyphSource, Line, PlacedGlyph, ShapedText, TextAlign, TextRender, TextStyle,
 };
 
 /// 默认行高倍数。字体自带值缺失时用它。
@@ -330,19 +331,15 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
         if self.disabled || shaped.lines.is_empty() {
             return None;
         }
-        // 图集按**像素字号**缓存，拿错字号会取到另一套位图。字号由排版时存进
-        // `ShapedText::px_size` —— 这里只取用。
-        //
-        // ⚠ 这里曾经是**反推**的（`infer_px_size`）。那条公式假设「最宽字形是拉丁窄字符、
-        // 步进 ≈ 0.5em」，于是含 CJK 的文本（全角步进 ≈ 1em）会反推出**两倍**字号：
-        // 16px 的中文按 32px 栅格化，而步进仍按 16px 算 —— 字形互相叠压成一行糊。
-        // 症状与「字体没有该字」「GPU 没画」都极像，于是被当成环境问题查了很久。
-        let px_size = shaped.px_size;
+        // 图集按**栅格化基准字号**缓存：SDF 与显示字号无关，所有字号共用一套位图。
+        // `ShapedText::px_size` 是显示字号，只用来算绘制时的缩放，不再参与图集查找。
+        let display_px = shaped.px_size;
         debug_assert!(
-            px_size > 0.0,
+            display_px > 0.0,
             "ShapedText::px_size 为 0 —— 排版时没填？手搭的 ShapedText 要自己填"
         );
-        let px = px_size.max(1.0) as u32;
+        // 按显示字号选 SDF 基准档：大字号用 128/256，保证只缩小不放大。
+        let px = sdf_tier(display_px);
         let font_id = self.source.font_id();
 
         // 归一化用图集**实际**的边长，而不是全局 `ATLAS_SIZE`。
@@ -375,7 +372,9 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                         offset: Point::new(0.0, 0.0),
                         width: 0,
                         height: 0,
-                        coverage: Vec::new(),
+                        sdf: Vec::new(),
+                        spread: SDF_SPREAD,
+                        base_px: px as f32,
                     });
                 self.atlas.get_or_insert(font_id, g.glyph_id, px, Some(r));
             }
@@ -405,32 +404,31 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                 }
                 let baseline_x = origin.x + g.offset.x;
                 let baseline_y = origin.y + line.baseline.y;
+                // 显示字号 / 基准字号 = SDF 到屏幕的缩放。offset、size 都按这个
+                // 比例放大；uv 覆盖**含留白**的整块，否则最外沿采不到过渡带。
+                let scale = display_px / entry.base_px;
+                let pad = SDF_PADDING as f32;
+                let uv = UvRect::new(
+                    (entry.uv.x - pad) * inv,
+                    (entry.uv.y - pad) * inv,
+                    (entry.size.width + 2.0 * pad) * inv,
+                    (entry.size.height + 2.0 * pad) * inv,
+                );
+                // `w` 是 smoothstep 在 SDF 值域上的过渡半宽：
+                // d_screen = (s - 0.5) · 2·spread·scale，令 d_screen = ±AA_BAND 即得。
+                let w = crate::render::quad::AA_BAND / (2.0 * entry.spread * scale);
                 quads.push(GlyphQuad {
-                    // 图集条目按**像素**记 uv（位置在下次淘汰之前不变），这里归一化。
-                    //
-                    // ⚠ 归一化的是**墨**的矩形，不含四周的留白 —— 留白只是让双线性
-                    // 采样在边缘摸到透明像素，不参与 uv，也不改变 `dst` 的尺寸。
-                    uv: UvRect::new(
-                        entry.uv.x * inv,
-                        entry.uv.y * inv,
-                        entry.uv.width * inv,
-                        entry.uv.height * inv,
-                    ),
-                    // offset 是**屏幕方向**（y 向下）相对基线原点的偏移：基线之上
-                    // 为**负**（ab_glyph 的 `px_bounds` 就是这个约定，见其
-                    // `min.y * -scale_factor.vertical`）。
-                    //
-                    // ⚠ 这条公式曾经写成 `baseline - offset.y - height`（把 offset
-                    // 当成 y-up 的正值）。后果不是偏移一两个像素，而是**每个字形的
-                    // 顶部都贴到基线上**：'h' 与 'e' 顶在同一条线、底相差一个字高 ——
-                    // 同一行字的基线互相错开，descender 整个消失。
+                    uv,
+                    // offset 是**屏幕方向**（y 向下）相对基线原点的偏移，基线之上为负。
+                    // 留白在墨迹之外，所以左上角要再往外推 pad。
                     dst: Rect::new(
-                        baseline_x + entry.offset.x,
-                        baseline_y + entry.offset.y,
-                        entry.size.width,
-                        entry.size.height,
+                        baseline_x + (entry.offset.x - pad) * scale,
+                        baseline_y + (entry.offset.y - pad) * scale,
+                        (entry.size.width + 2.0 * pad) * scale,
+                        (entry.size.height + 2.0 * pad) * scale,
                     ),
                     color_glyph: g.color_glyph,
+                    sdf: Some(w),
                 });
             }
         }
@@ -462,13 +460,16 @@ impl GlyphSource for FixedWidth {
     /// 空白字形（空格）的路径由 `space_advances_but_renders_nothing` 那类断言覆盖：
     /// 它需要"有步进、无位图"，而本替身不区分字符。
     fn rasterize(&mut self, _glyph_id: u32, px_size: u32) -> Option<AtlasRaster> {
-        // 画一个 px/2 见方的实心块 —— 有位图，于是整条 `glyph_quads` 路径可测。
+        // 画一个基准尺寸一半的实心块 —— 有位图，于是整条 `glyph_quads` 路径可测。
         let n = (px_size / 2).max(1);
+        let ink = vec![255u8; (n * n) as usize];
         Some(AtlasRaster {
             offset: Point::new(0.0, 0.0),
             width: n,
             height: n,
-            coverage: vec![255u8; (n * n) as usize],
+            sdf: from_coverage(&ink, n, n, SDF_PADDING),
+            spread: SDF_SPREAD,
+            base_px: SDF_BASE_PX as f32,
         })
     }
 
@@ -510,12 +511,16 @@ impl GlyphSource for VaryingOffset {
             'p' | 'y' => (self.full * 0.7, self.full * 0.3),
             _ => (self.full * 0.7, 0.0),
         };
+        let (w, h) = (self.width as u32, (top + below) as u32);
+        let ink = vec![255u8; (w * h).max(4) as usize];
         Some(AtlasRaster {
             // y-down：基线之上为负。
             offset: Point::new(0.0, -top),
-            width: self.width as u32,
-            height: (top + below) as u32,
-            coverage: vec![255u8; ((self.width as u32) * (top + below) as u32).max(4) as usize],
+            width: w,
+            height: h,
+            sdf: from_coverage(&ink, w, h, SDF_PADDING),
+            spread: SDF_SPREAD,
+            base_px: SDF_BASE_PX as f32,
         })
     }
 

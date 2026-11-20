@@ -142,6 +142,7 @@ fn reused_path_byte_identical_to_one_shot_path() {
                 uv: UvRect::new(0.1, 0.2, 0.05, 0.05),
                 dst: Rect::new(0.0, 0.0, 8.0, 8.0),
                 color_glyph: false,
+                sdf: None,
             }]
             .into(),
             offset: Point::new(0.0, 0.0),
@@ -575,6 +576,7 @@ fn text_cmd(dst: Rect) -> Command {
             uv: UvRect::new(0.1, 0.2, 0.05, 0.05),
             dst,
             color_glyph: false,
+            sdf: None,
         }]
         .into(),
         offset: Point::new(0.0, 0.0),
@@ -1399,6 +1401,7 @@ fn translate_also_applies_to_glyphs() {
             uv: UvRect::new(0.1, 0.2, 0.05, 0.05),
             dst: Rect::new(16.0, 16.0, 32.0, 32.0),
             color_glyph: false,
+            sdf: None,
         }]
         .into(),
         offset: Point::new(0.0, 0.0),

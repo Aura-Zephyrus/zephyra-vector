@@ -389,6 +389,9 @@ pub struct GlyphQuad {
     pub dst: Rect,
     /// 该字形是否来自彩色字体（如 emoji）——决定采样时是否忽略 `color`。
     pub color_glyph: bool,
+    /// `Some(w)` = 这是 SDF 字形，`w` 是 `smoothstep` 在 SDF 值域上的过渡半宽；
+    /// `None` = 旧式覆盖率位图（替身、无字体降级路径）。
+    pub sdf: Option<f32>,
 }
 
 /// 一条命令的排序键。

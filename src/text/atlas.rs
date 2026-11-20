@@ -14,20 +14,15 @@
 //! 横排货架：字形从左到右排，放不下就换行。**新字形只往后追加** —— 已放置的
 //! 字形位置不动，所以取用拿到的 uv 在下次淘汰之前都稳定。
 //!
-//! # 每个字形四周留一圈透明像素
+//! # 每个字形四周留一圈距离场像素
 //!
-//! 采样器是**双线性**的（`D3D11_FILTER_MIN_MAG_MIP_LINEAR`）。一个字形占据图集
-//! 里 `[x, x+w)` 这些像素，而片元在四边形最外沿采样时，采样点落在
-//! `u = x / ATLAS_SIZE` 上 —— 换算回纹素坐标是 `x - 0.5`，正好在纹素 `x-1` 与 `x`
-//! 之间，于是**各取一半**。
+//! 字形按 `(w + 2 × SDF_PADDING) × (h + 2 × SDF_PADDING)` 占位，墨写在中间，
+//! 四周那圈存的是**轮廓外侧的 SDF 距离值**（编码 < 128），不是透明像素。
+//! 绘制时四边形覆盖整个 padded 区域，片元用 `smoothstep` 从距离场重建覆盖率 ——
+//! 若留白小于 `SDF_SPREAD`，字形最外沿就采不到完整的过渡带，边缘会变硬。
 //!
-//! 没有留白时，纹素 `x-1` 属于**左边那个字形**，那半个邻居的墨就会渗进来：
-//! 字与字之间出现淡淡的竖条、圆角处出现鬼影。所以每个字形实际占
-//! `(w + 2 × GLYPH_PADDING) × (h + 2 × GLYPH_PADDING)`，墨写在中间，四周留透明。
-//!
-//! 一圈（`GLYPH_PADDING = 1`）对双线性**恰好够**：越界的采样最多摸到紧邻的一格。
-//! ⚠ 若将来给图集加 mipmap，这个值必须跟着变大 —— mip 层级越低采样足迹越宽，
-//! 1 像素的留白挡不住。当前纹理是 `MipLevels: 1`（见各后端的建图集处）。
+//! 这圈留白同时兼作双线性采样的防渗垫：采样器是 `D3D11_FILTER_MIN_MAG_MIP_LINEAR`，
+//! 四边形最外沿的采样点落在相邻纹素之间，没有留白时会把邻居的墨混进来。
 //!
 //! # 满了就按 LRU 淘汰
 //!
@@ -83,12 +78,11 @@ use crate::core::{Point, Rect, Size};
 /// 图集边长（像素）。取 2 的幂：GPU 上的寻址与采样更快，且便于分块压缩。
 pub const ATLAS_SIZE: u32 = 1024;
 
-/// 每个字形四周留出的透明像素数。
+/// 每个字形四周留出的像素数。SDF 需要它来存轮廓外侧的距离值。
 ///
-/// 存在的理由是双线性采样会摸到紧邻的一格 —— 完整推导见模块文档。
-///
-/// ⚠ 给图集加 mipmap 时必须一并调大。
-pub const GLYPH_PADDING: u32 = 1;
+/// 它同时是 [`super::SDF_SPREAD`] 的整数值 —— 留白必须 ≥ spread，否则
+/// `smoothstep` 在字形最外沿采不到完整的过渡带。
+pub use super::{SDF_BASE_PX, SDF_PADDING, SDF_SPREAD};
 
 /// 字形在缓存里的键：`(font_id, glyph_id, px_size)`。
 ///
@@ -288,8 +282,9 @@ fn pack_fits(survivors: &[&EntryInfo], need: (u32, u32), side: u32) -> bool {
 struct Entry {
     /// 对外暴露的那一份：uv、尺寸、基线偏移。
     glyph: AtlasGlyph,
-    /// 重排时用来重新落盘的覆盖率位图，行宽 = `width`。空白字形为空。
-    coverage: Vec<u8>,
+    /// 重排时用来重新落盘的 SDF（含留白），行宽 = `width + 2 × SDF_PADDING`。
+    /// 空白字形为空。
+    sdf: Vec<u8>,
     width: u32,
     height: u32,
     /// 最近一次被取用的序号（越大越新）。淘汰从最小的开始。
@@ -309,14 +304,14 @@ impl Entry {
 
 /// 一个条目的**占位尺寸**（含两侧留白）。空白字形返回 `(0, 0)`。
 ///
-/// ⚠ 空白字形必须返回 `(0, 0)` 而不是 `(2, 2)`（`2 × GLYPH_PADDING`）—— 它们压根
+/// ⚠ 空白字形必须返回 `(0, 0)` 而不是 `(2, 2)`（`2 × SDF_PADDING`）—— 它们压根
 /// 不占画布。这个值同时喂给策略的 `padded` 与落盘的 `place`，给错会让干跑与落盘
 /// 对不上（又是"判得下、放不下"）。
 fn padded_size(e: &Entry) -> (u32, u32) {
     if e.width == 0 || e.height == 0 {
         return (0, 0);
     }
-    let p = 2 * GLYPH_PADDING;
+    let p = 2 * SDF_PADDING;
     (e.width + p, e.height + p)
 }
 
@@ -380,8 +375,8 @@ impl Shelf {
 
 /// 图集纹理格式的 RGBA 分量数。
 ///
-/// 图集本质是单通道覆盖率（R8），但展开成 RGBA 以兼容所有后端 —— 有些采样器只读
-/// rgb 通道（[`crate::paint::Renderer`] 的着色器就是从 alpha 取覆盖率的）。
+/// 图集本质是单通道 SDF（R8），但展开成 RGBA 以兼容所有后端 —— 着色器从 red
+/// 通道取距离值。
 const RGBA: usize = 4;
 
 /// 一个已打包的字形：纹理内的位置与像素尺寸。
@@ -396,6 +391,10 @@ pub struct AtlasGlyph {
     /// 字体约定 y **向上**为正，而核心的 DIP 坐标系 y 向下为正。转换发生在构造
     /// [`crate::paint::GlyphQuad::dst`] 时，这里原样保留以免丢信息。
     pub offset: Point,
+    /// SDF 距离编码范围（基准像素）。绘制端据此换算 `smoothstep` 半宽。
+    pub spread: f32,
+    /// 生成时的基准字号（em 像素）。绘制端用它算显示缩放 `字号 / base_px`。
+    pub base_px: f32,
 }
 
 /// 字形图集。
@@ -546,12 +545,14 @@ impl GlyphAtlas {
                 uv: Rect::new(0.0, 0.0, 0.0, 0.0),
                 size: Size::new(0.0, 0.0),
                 offset: blank_offset,
+                spread: SDF_SPREAD,
+                base_px: SDF_BASE_PX as f32,
             };
             self.glyphs.insert(
                 key,
                 Entry {
                     glyph: entry,
-                    coverage: Vec::new(),
+                    sdf: Vec::new(),
                     width: 0,
                     height: 0,
                     last_used: now,
@@ -560,8 +561,8 @@ impl GlyphAtlas {
             return Some(entry);
         };
 
-        // 真正要占的地方：位图 + 四周一圈透明留白。
-        let padded = (r.width + 2 * GLYPH_PADDING, r.height + 2 * GLYPH_PADDING);
+        // 真正要占的地方：墨迹 + 四周一圈 SDF 留白。
+        let padded = (r.width + 2 * SDF_PADDING, r.height + 2 * SDF_PADDING);
         let (x, y) = match self.shelf.place(padded.0, padded.1) {
             Some(p) => p,
             None => {
@@ -573,22 +574,25 @@ impl GlyphAtlas {
             }
         };
 
-        // 墨写在留白之内。
-        let ink_x = x + GLYPH_PADDING;
-        let ink_y = y + GLYPH_PADDING;
-        self.write_bitmap(ink_x, ink_y, &r);
+        // `sdf` 缓冲自带留白，整块写在 padded 区域起点；uv/size 仍记墨迹。
+        let ink_x = x + SDF_PADDING;
+        let ink_y = y + SDF_PADDING;
+        let (sdf_w, sdf_h) = (r.width + 2 * SDF_PADDING, r.height + 2 * SDF_PADDING);
+        self.write_sdf(x, y, sdf_w, sdf_h, &r.sdf);
         self.revision += 1;
 
         let entry = AtlasGlyph {
             uv: Rect::new(ink_x as f32, ink_y as f32, r.width as f32, r.height as f32),
             size: Size::new(r.width as f32, r.height as f32),
             offset: r.offset,
+            spread: r.spread,
+            base_px: r.base_px,
         };
         self.glyphs.insert(
             key,
             Entry {
                 glyph: entry,
-                coverage: r.coverage,
+                sdf: r.sdf,
                 width: r.width,
                 height: r.height,
                 last_used: now,
@@ -597,36 +601,19 @@ impl GlyphAtlas {
         Some(entry)
     }
 
-    /// 把覆盖率位图写进画布。
+    /// 把 SDF 缓冲整块写进画布。
     ///
-    /// ⚠ `coverage` 的坐标**已经**是 `(0,0)..(w,h)`，不要减 `offset`。
+    /// ⚠ 这里的坐标**已经**是 padded 区域左上角，不要再减 `offset` 或留白 ——
+    /// 早期版本在这里和 `GlyphSource` 里各减了一次 offset，导致图集全空。
     ///
-    /// `AtlasRaster::coverage` 是"字形自身位图"，第 0 行 0 列就是字形左上角 ——
-    /// 这一点由 [`crate::text::GlyphSource::rasterize`] 的实现保证（ab_glyph 的
-    /// `OutlinedGlyph::draw` 回调坐标本就相对 `px_bounds.min`）。
-    ///
-    /// 这里原先写的是 `ax = sx - bx; ay = sy - by;`，又减了一次。而
-    /// `r.offset.y` 对大写字母来说就是 cap 高度（32px 的 `'H'` 约 22），于是
-    /// `ay` 恒为负 → 越界判断把**每一个**像素都 `continue` 掉 → 图集全空 →
-    /// 屏幕上"字完全不出现"。
-    ///
-    /// 位置换算只做一次：`图集内位置 = (x + sx, y + sy)`。
-    fn write_bitmap(&mut self, x: u32, y: u32, r: &AtlasRaster) {
-        self.write_coverage(x, y, r.width, r.height, &r.coverage);
-    }
-
-    /// 同上，但直接收尺寸与位图 —— 重排时手头只有这两样，不需要再拼一个 `AtlasRaster`。
-    fn write_coverage(&mut self, x: u32, y: u32, width: u32, height: u32, coverage: &[u8]) {
-        let src_w = (coverage.len() / height.max(1) as usize).min(width as usize);
+    /// 与旧 coverage 图集不同，**不能跳过 0 值像素**：0 表示"距轮廓 ≥ spread 的
+    /// 外侧"，是距离场的有效值，`smoothstep` 需要它。相邻字形不会互相覆盖 ——
+    /// shelf 分配的是互不重叠的 padded 矩形。
+    fn write_sdf(&mut self, x: u32, y: u32, width: u32, height: u32, sdf: &[u8]) {
+        let src_w = (sdf.len() / height.max(1) as usize).min(width as usize);
         for sy in 0..height {
             for sx in 0..src_w {
-                let v = coverage[sy as usize * src_w + sx];
-                if v == 0 {
-                    // 跳过透明像素：不写就不会破坏该位置上**已有**的字形。
-                    // 早期版本无条件写，于是每个字形的透明区域都把邻居擦成了 0 ——
-                    // 症状是"字之间互相啃掉一块"。
-                    continue;
-                }
+                let v = sdf[sy as usize * src_w + sx];
                 let dx = x + sx as u32;
                 let dy = y + sy;
                 if dx >= self.side || dy >= self.side {
@@ -636,8 +623,7 @@ impl GlyphAtlas {
                 if dst + RGBA > self.pixels.len() {
                     continue;
                 }
-                // 四个通道都写：着色器从 alpha 取覆盖率，但留一份灰度可让调试用的
-                // 「把图集当图片看」直接显示出形状。
+                // 四个通道都写：着色器从 red 取距离，留灰度副本便于把图集当图片看。
                 self.pixels[dst] = v;
                 self.pixels[dst + 1] = v;
                 self.pixels[dst + 2] = v;
@@ -707,14 +693,15 @@ impl GlyphAtlas {
                 .shelf
                 .place(pw, ph)
                 .expect("复验已经证明这批能全部放下");
-            e.glyph.uv.x = (x + GLYPH_PADDING) as f32;
-            e.glyph.uv.y = (y + GLYPH_PADDING) as f32;
-            self.write_coverage(
-                x + GLYPH_PADDING,
-                y + GLYPH_PADDING,
-                e.width,
-                e.height,
-                &e.coverage,
+            e.glyph.uv.x = (x + SDF_PADDING) as f32;
+            e.glyph.uv.y = (y + SDF_PADDING) as f32;
+            // `sdf` 自带留白，整块从 padded 区域起点写；不再是"只写墨迹"。
+            self.write_sdf(
+                x,
+                y,
+                e.width + 2 * SDF_PADDING,
+                e.height + 2 * SDF_PADDING,
+                &e.sdf,
             );
             survivors.insert(*key, e);
         }
@@ -834,14 +821,20 @@ impl GlyphAtlas {
 /// 每个**新**字形一次分配 —— 而新字形是罕见事件（稳态下零分配），完全可接受。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtlasRaster {
-    /// 位图相对基线原点的偏移。
+    /// 墨迹相对基线原点的偏移。
     pub offset: Point,
-    /// 位图宽（像素）。
+    /// 墨迹宽（像素）。
     pub width: u32,
-    /// 位图高（像素）。
+    /// 墨迹高（像素）。
     pub height: u32,
-    /// 逐像素覆盖率（0..=255），长度 = `width × height`。
-    pub coverage: Vec<u8>,
+    /// 逐像素 SDF（128 = 轮廓边缘），长度 =
+    /// `(width + 2 × SDF_PADDING) × (height + 2 × SDF_PADDING)`。
+    /// 第 `(0,0)` 个像素是 padded 区域左上角。
+    pub sdf: Vec<u8>,
+    /// 这份 SDF 的距离编码范围（基准像素）。恒为 [`super::SDF_SPREAD`]。
+    pub spread: f32,
+    /// 生成时的基准字号（em 像素），供绘制端换算缩放。
+    pub base_px: f32,
 }
 
 /// 图集使用情况。

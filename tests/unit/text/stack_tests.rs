@@ -181,9 +181,9 @@ fn baselines_advance_by_one_line_height_each() {
 /// **缩进错误的测试不会失败，它只是消失**，所以要靠 `dead_code` 警告发现。
 #[test]
 fn eviction_produces_non_overlapping_uvs() {
-    // FixedWidth 的字形是 px/2 见方的实心块：16px ⇒ 8×8 的墨 + 两圈留白 = 10×10。
-    // 32×32 只装得下 3×3 = 9 个，而下面排 12 个字符 ⇒ 必然淘汰。
-    let mut s = TextStack::with_atlas_size(FixedWidth { advance: 10.0 }, 32);
+    // 替身在基准分辨率画 32×32 的墨 + 两圈 SDF 留白 = 48×48。
+    // 160×160 只装得下 3×3 = 9 个，而下面排 12 个字符 ⇒ 必然淘汰。
+    let mut s = TextStack::with_atlas_size(FixedWidth { advance: 10.0 }, 160);
     let style = TextStyle {
         size: 16.0,
         ..Default::default()
@@ -213,16 +213,17 @@ fn eviction_produces_non_overlapping_uvs() {
         }
     }
 
-    // 每个 uv 处必须真的有墨：重排若把墨放错地方，这条会挂。
+    // uv 现在覆盖含 SDF 留白的整块；留白处的值是 0，所以要查**中心**的墨。
+    // 重排若把墨放错地方，这条会挂。
     let size = s.atlas().size() as usize;
     let pixels = s.atlas().pixels();
     for (k, q) in quads.iter().enumerate() {
-        let x = (q.uv.x * size as f32) as usize;
-        let y = (q.uv.y * size as f32) as usize;
+        let x = (q.uv.x * size as f32 + q.uv.width * size as f32 * 0.5) as usize;
+        let y = (q.uv.y * size as f32 + q.uv.height * size as f32 * 0.5) as usize;
         assert!(x < size && y < size, "四边形 {k} 的 uv 越出图集");
         assert!(
-            pixels[(y * size + x) * 4 + 3] > 0,
-            "四边形 {k} 的 uv 指向的像素是空的"
+            pixels[(y * size + x) * 4] > 0,
+            "四边形 {k} 的 uv 中心指向的 SDF 是空的"
         );
     }
 }
@@ -327,14 +328,14 @@ fn font_size_is_forwarded_not_inferred() {
             .glyph_quads(&shaped, Point::new(0.0, 0.0), &style)
             .expect("有字体时应有字形四边形");
         assert!(!quads.is_empty());
-        // 判据取**替身自己知道的**关系：`FixedWidth::rasterize` 画 `px_size / 2`
-        // 见方的块，所以字形高度必须**精确等于** `px/2`。
-        //
-        // 旧的反推公式会给出 `2 × px`，那时高度就是 `px` —— 差一倍，肉眼是一行糊。
-        let expect = ((px as u32) / 2).max(1) as f32;
+        // 替身在基准分辨率画 `base/2` 见方的墨；四边形覆盖墨 + 两圈 SDF 留白，
+        // 再按 显示字号 / 基准字号 缩放。
+        let ink = (crate::text::SDF_BASE_PX / 2) as f32;
+        let expect = (ink + 2.0 * crate::text::SDF_PADDING as f32) * px
+            / crate::text::SDF_BASE_PX as f32;
         assert_eq!(
             quads[0].dst.height, expect,
-            "字号 {px} 时字形高度应为 {expect} —— 若约为 {px}，说明字号被反推成了两倍"
+            "字号 {px} 时四边形高度应为 {expect} —— 若与字号无关，说明缩放没生效"
         );
     }
 }
@@ -400,7 +401,7 @@ impl super::super::EvictionPolicy for OddOnly {
 /// 触发淘汰后检查"偶数字形真的没了"。
 #[test]
 fn host_can_install_custom_eviction_policy() {
-    let mut s = TextStack::with_atlas_size(FixedWidth { advance: 10.0 }, 32);
+    let mut s = TextStack::with_atlas_size(FixedWidth { advance: 10.0 }, 160);
     s.set_atlas_policy(OddOnly);
     let style = TextStyle {
         size: 16.0,
@@ -431,7 +432,7 @@ fn host_can_install_custom_eviction_policy() {
     let present: Vec<u32> = all
         .iter()
         .copied()
-        .filter(|id| s.atlas().get(0, *id, 16).is_some())
+        .filter(|id| s.atlas().get(0, *id, crate::text::SDF_BASE_PX).is_some())
         .collect();
 
     let evens: Vec<u32> = all.iter().copied().filter(|id| id % 2 == 0).collect();
@@ -439,14 +440,14 @@ fn host_can_install_custom_eviction_policy() {
 
     for id in &odds {
         assert!(
-            s.atlas().get(0, *id, 16).is_some(),
+            s.atlas().get(0, *id, crate::text::SDF_BASE_PX).is_some(),
             "id={id} 是奇数，OddOnly 策略要求保留 —— 若它被丢了，说明策略没生效"
         );
     }
     let evens_left: Vec<u32> = evens
         .iter()
         .copied()
-        .filter(|id| s.atlas().get(0, *id, 16).is_some())
+        .filter(|id| s.atlas().get(0, *id, crate::text::SDF_BASE_PX).is_some())
         .collect();
     assert!(
         evens_left.len() < evens.len(),
@@ -455,7 +456,7 @@ fn host_can_install_custom_eviction_policy() {
     );
     assert!(
         present.len() <= 9,
-        "32×32 只装得下 9 个 10×10 的字形，实得 {} —— 复验或打包有问题",
+        "160×160 只装得下 9 个 48×48 的字形，实得 {} —— 复验或打包有问题",
         present.len()
     );
     assert!(!quads.is_empty(), "淘汰之后仍应有字形可见");

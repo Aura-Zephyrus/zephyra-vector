@@ -47,7 +47,9 @@
 // 写成 `crate::` 会在 core 里指向"依赖自己的那个 crate"，而 core 没有自依赖 ——
 // 那种写法只可能在 core 外的测试里成立。
 use crate::core::Point;
-use crate::text::atlas::{AtlasRaster, GlyphAtlas, ATLAS_SIZE};
+use crate::text::atlas::{
+    AtlasRaster, GlyphAtlas, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD, ATLAS_SIZE,
+};
 use crate::text::{GlyphSource, TextEngine, TextRender, TextStack, TextStyle};
 
 /// 一个只产出一个固定位图的假字形来源。
@@ -78,6 +80,24 @@ impl GlyphSource for OneGlyph {
     }
 }
 
+/// 把墨迹字节放进带 SDF 留白的缓冲；留白填 0。
+fn padded(ink: &[u8], w: u32, h: u32) -> Vec<u8> {
+    let (pad, mw) = (SDF_PADDING as usize, (w + 2 * SDF_PADDING) as usize);
+    let mut out = vec![0u8; mw * (h + 2 * SDF_PADDING) as usize];
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            out[(y + pad) * mw + x + pad] = ink[y * w as usize + x];
+        }
+    }
+    out
+}
+
+/// 从带留白的 SDF 缓冲里取墨迹像素。
+fn ink_at(r: &AtlasRaster, x: u32, y: u32) -> u8 {
+    let mw = (r.width + 2 * SDF_PADDING) as usize;
+    r.sdf[((y + SDF_PADDING) as usize) * mw + (x + SDF_PADDING) as usize]
+}
+
 /// 一个 4×3 的位图，覆盖率沿对角线递增。
 ///
 /// 用非平凡的数值（不是全 0 / 全 255）才能区分「写错位置」与「写错值」。
@@ -90,12 +110,14 @@ fn diag_bitmap() -> AtlasRaster {
         }
     }
     AtlasRaster {
-        // **故意给一个大 offset** —— 契约就是「offset 不影响 coverage 的落点」。
+        // **故意给一个大 offset** —— 契约就是「offset 不影响墨迹的落点」。
         // 若实现里减了 offset，这个测试就会失败（而真字体的大写字母正是这种情况）。
         offset: Point::new(3.0, 22.0),
         width: w,
         height: h,
-        coverage,
+        sdf: padded(&coverage, w, h),
+        spread: SDF_SPREAD,
+        base_px: SDF_BASE_PX as f32,
     }
 }
 
@@ -127,7 +149,7 @@ fn coverage_lands_verbatim_offset_does_not_shift() {
 
     for sy in 0..raster.height {
         for sx in 0..raster.width {
-            let want = raster.coverage[(sy * raster.width + sx) as usize];
+            let want = ink_at(&raster, sx, sy);
             let got = alpha_at(&atlas, ox + sx, oy + sy);
             assert_eq!(
                 got,
@@ -173,7 +195,9 @@ fn later_glyph_insert_does_not_erase_existing_ones() {
         offset: Point::new(0.0, 0.0),
         width: 64,
         height: 64,
-        coverage: vec![200; (64 * 64) as usize],
+        sdf: padded(&vec![200u8; 64 * 64], 64, 64),
+        spread: SDF_SPREAD,
+        base_px: SDF_BASE_PX as f32,
     };
     let big_entry = atlas
         .get_or_insert(1, 1, 16, Some(big))
@@ -212,7 +236,9 @@ fn blank_glyph_costs_no_space_but_has_an_entry() {
         offset: Point::new(0.0, 0.0),
         width: 0,
         height: 0,
-        coverage: Vec::new(),
+        sdf: Vec::new(),
+        spread: SDF_SPREAD,
+        base_px: SDF_BASE_PX as f32,
     };
     let e = atlas
         .get_or_insert(9, 5, 16, Some(blank))

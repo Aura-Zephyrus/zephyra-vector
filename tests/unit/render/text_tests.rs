@@ -61,11 +61,14 @@ fn capital_ink_is_cap_height_not_three_quarters() {
         Err(_) => return,
     };
     let id = src.glyph_id('H');
-    let r = src.rasterize(id, 34).expect("'H' 必须栅格化出位图");
-    let ratio = r.height as f32 / 34.0;
+    // 传入的是排版端选好的 SDF 基准档位，这里用默认档 64。
+    let base = crate::text::SDF_BASE_PX;
+    let r = src.rasterize(id, base).expect("'H' 必须栅格化出位图");
+    assert_eq!(r.base_px, base as f32);
+    let ratio = r.height as f32 / crate::text::SDF_BASE_PX as f32;
     assert!(
         (0.55..0.90).contains(&ratio),
-        "'H'@34px 位图高 {} = {ratio:.2}em；cap 高度应约 0.7em。\
+        "'H' 基准位图高 {} = {ratio:.2}em；cap 高度应约 0.7em。\
              实测 0.5 出头说明字被按 upem/hhea 比例缩小了（em 与行高混用）",
         r.height
     );
@@ -194,11 +197,12 @@ fn the_same_text_packs_each_glyph_once() {
 }
 
 #[test]
-fn different_font_sizes_use_different_bitmaps() {
+fn one_sdf_bitmap_serves_every_display_size() {
     let Some(mut s) = system_stack() else {
         eprintln!("跳过：找不到系统字体");
         return;
     };
+    // 12 / 36 同属 64 档：共用一份位图，四边形按字号缩放。
     let small = TextStyle {
         size: 12.0,
         ..Default::default()
@@ -209,13 +213,42 @@ fn different_font_sizes_use_different_bitmaps() {
     };
     let before = s.atlas_stats().glyphs;
     let a = s.shape("H", &small, None);
-    let _ = s.glyph_quads(&a, Point::new(0.0, 0.0), &small);
+    let (_, qa) = s.glyph_quads(&a, Point::new(0.0, 0.0), &small).unwrap();
     let b = s.shape("H", &large, None);
-    let _ = s.glyph_quads(&b, Point::new(0.0, 0.0), &large);
-    assert!(
-        s.atlas_stats().glyphs > before + 1,
-        "不同字号必须各打包一份位图"
+    let (_, qb) = s.glyph_quads(&b, Point::new(0.0, 0.0), &large).unwrap();
+    assert_eq!(
+        s.atlas_stats().glyphs,
+        before + 1,
+        "SDF 与字号无关：同一字形只该打包一份位图"
     );
+    assert!(
+        (qb[0].dst.width / qa[0].dst.width - 3.0).abs() < 0.01,
+        "四边形应随显示字号线性放大 3 倍"
+    );
+    // 字号越大，smoothstep 在 SDF 值域上的半宽越窄 —— 边缘因此保持锐利。
+    assert!(qb[0].sdf.unwrap() < qa[0].sdf.unwrap());
+}
+
+/// 大字号自动切到高档位：图集里多一份位图，但四边形尺寸仍随字号线性变化。
+/// 这就是"超大字号不糊"的兜底 —— 不再把 64px 的距离场放大数倍使用。
+#[test]
+fn large_text_uses_a_higher_sdf_tier() {
+    let Some(mut s) = system_stack() else {
+        eprintln!("跳过：找不到系统字体");
+        return;
+    };
+    let small = TextStyle { size: 16.0, ..Default::default() };
+    let huge = TextStyle { size: 200.0, ..Default::default() };
+    let a = s.shape("H", &small, None);
+    let (_, qa) = s.glyph_quads(&a, Point::new(0.0, 0.0), &small).unwrap();
+    let before = s.atlas_stats().glyphs;
+
+    let b = s.shape("H", &huge, None);
+    let (_, qb) = s.glyph_quads(&b, Point::new(0.0, 0.0), &huge).unwrap();
+    assert_eq!(s.atlas_stats().glyphs, before + 1, "高档位应单独缓存一份 SDF");
+    assert!(qb[0].dst.width > qa[0].dst.width * 5.0, "200px 文本应明显大于 16px");
+    // 200px 用 256 档（只缩小不放大），16px 用 64 档。
+    assert!(qb[0].sdf.unwrap() < qa[0].sdf.unwrap(), "高档位在 SDF 值域的过渡更窄");
 }
 
 #[test]

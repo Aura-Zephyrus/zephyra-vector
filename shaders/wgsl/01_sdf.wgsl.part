@@ -1,0 +1,47 @@
+fn sd_round_rect(p: vec2f, half_size: vec2f, radius: f32, shape_k: f32) -> f32 {
+    let r = min(radius, min(half_size.x, half_size.y));
+    if (r <= 0.0 || shape_k > 1e6) {
+        let q = abs(p) - half_size;
+        return length(max(q, vec2f(0.0, 0.0))) + min(max(q.x, q.y), 0.0);
+    }
+    let q = abs(p) - half_size + vec2f(r, r);
+    let qx = max(q.x, 0.0);
+    let qy = max(q.y, 0.0);
+    let inside = min(max(q.x, q.y), 0.0);
+    let k = shape_k;
+    if (abs(k - 1.0) < 1e-4) {
+        return length(vec2f(qx, qy)) + inside - r;
+    }
+    if (abs(k) < 1e-4) {
+        return (qx + qy) + inside - r;
+    }
+    if (k > 0.0) {
+        let n = 2.0 * k;
+        let ax = max(qx / r, 0.0);
+        let ay = max(qy / r, 0.0);
+        var corner_d = 0.0;
+        if (ax > 0.0 || ay > 0.0) {
+            corner_d = r * pow(pow(max(ax, 1e-7), n) + pow(max(ay, 1e-7), n), 1.0 / n);
+        }
+        return corner_d + inside - r;
+    }
+    if (k < -1e6) {
+        let d_outer = length(vec2f(qx, qy)) + inside - r;
+        if (qx > 0.0 && qy > 0.0) {
+            let notch = -min(q.x, q.y);
+            return max(notch, d_outer);
+        }
+        return d_outer;
+    }
+    let n2 = 2.0 * (-k);
+    let ax2 = max(qx / r, 0.0);
+    let ay2 = max(qy / r, 0.0);
+    var convex = 0.0;
+    if (ax2 > 0.0 || ay2 > 0.0) {
+        convex = pow(pow(max(ax2, 1e-7), n2) + pow(max(ay2, 1e-7), n2), 1.0 / n2);
+    }
+    let scoop_d = r * (1.0 - convex);
+    let base = length(vec2f(qx, qy)) + inside - r;
+    if (qx > 0.0 && qy > 0.0) { return max(scoop_d, base); }
+    return base;
+}

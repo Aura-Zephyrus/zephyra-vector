@@ -285,7 +285,15 @@ impl CpuCanvas {
                 let color = a.color;
                 let coverage = match a.kind {
                     k if (k - kind::GLYPH).abs() < 0.01 => {
-                        atlas.map(|at| at.sample_alpha(uv)).unwrap_or(0.0)
+                        if a.corner[0] > 0.0 {
+                            // SDF：`corner.x` 是与 GPU 共用的一条契约 —— smoothstep
+                            // 半宽由排版端按显示字号算好，两边用同一条公式。
+                            let s = atlas.map(|at| at.sample_sdf(uv)).unwrap_or(0.0);
+                            let w = a.corner[0];
+                            smoothstep(0.5 - w, 0.5 + w, s)
+                        } else {
+                            atlas.map(|at| at.sample_alpha(uv)).unwrap_or(0.0)
+                        }
                     }
                     // 图像：**只画形状，不采样纹理。**
                     //
@@ -323,10 +331,10 @@ pub struct AtlasBitmap {
 }
 
 impl AtlasBitmap {
-    /// 按 uv 取 **alpha** 分量当覆盖率。
+    /// 按 uv 取 **alpha** 分量当覆盖率（旧式覆盖率图集的路径）。
     ///
-    /// 用最近邻而不是双线性：字形图集是二值化的 alpha 位图，双线性会把它糊掉
-    /// （小字号下表现为笔画粘连）。
+    /// 用最近邻而不是双线性：覆盖率位图是二值化的 alpha 位图，双线性会把它糊掉
+    /// （小字号下表现为笔画粘连）。SDF 路径用 [`Self::sample_sdf`]。
     pub fn sample_alpha(&self, uv: [f32; 2]) -> f32 {
         if uv[0] < 0.0 || uv[1] < 0.0 || uv[0] >= 1.0 || uv[1] >= 1.0 {
             return 0.0;
@@ -338,6 +346,20 @@ impl AtlasBitmap {
             return 0.0;
         }
         self.pixels[(y * s + x) * 4 + 3] as f32 / 255.0
+    }
+
+    /// 按 uv 取 SDF 值（red 通道，0..1）。与 GPU 字形分支读同一个通道。
+    pub fn sample_sdf(&self, uv: [f32; 2]) -> f32 {
+        if uv[0] < 0.0 || uv[1] < 0.0 || uv[0] >= 1.0 || uv[1] >= 1.0 {
+            return 0.0;
+        }
+        let s = self.size as usize;
+        let x = (uv[0] * s as f32) as usize;
+        let y = (uv[1] * s as f32) as usize;
+        if x >= s || y >= s {
+            return 0.0;
+        }
+        self.pixels[(y * s + x) * 4] as f32 / 255.0
     }
 
     /// 非透明像素数。

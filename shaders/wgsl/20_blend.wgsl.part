@@ -1,0 +1,222 @@
+// ═══════════════════════════════════════════════════════════════════════════
+//  可分离 / 非可分离混合模式
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 为什么必须用**片元着色器变体**而不是统一一个方程：系数可表达的那 15 个
+// （`Clear`..`Screen`）是 `r = Cs·ks + Cd·kd` 的形式，固定功能混合**原样**就能算；
+// 往后的 14 个不是 —— 可分离的 10 个里 `f` 不是线性组合（`Overlay` 有
+// `1−2·Cb` 这种分支），非可分离的 4 个依赖对方的色相 / 饱和度 / 明度。
+//
+// ⚠ HLSL 那边用宏一次生成 14 个入口；WGSL 没有预处理器，所以这里是 14 个
+// 三行的入口 + 共享的 `blend_with_dst`。顺序与 `filter.rs` 的枚举**一致** ——
+// 宿主按 `runs[].blend` 的下标挑入口，两边错位会让**某个混合模式画成别的模式**
+// 且没有任何报错。
+//
+// 合成公式（预乘空间）：
+//
+// ```text
+//   as = s.a                       源的 alpha
+//   Cs = s.rgb / as                反预乘
+//   Cd = d.rgb / d.a               反预乘
+//   B  = blend(Cs, Cd)             混合函数的**非预乘**结果
+//   out.rgb = (1−as)·Cd + as·B     ← 已经是预乘
+//   out.a   = as + ad·(1−as)
+// ```
+//
+// `as == 0` 时直接返回全 0：`(1−as)·Cd` 会把目标**擦掉**，而"什么都没画"
+// 绝不该改变目标像素。
+//
+// # 与系数模式的等价性
+//
+// `SrcOver` 在这个公式下的结果是 `(1−as)·Cd + as·Cs = Cs + (1−as)·Cd`，与固定功能的
+// `ONE/INV_SRC_ALPHA` **完全一致**。所以 15 个系数模式不需要走这里 —— 少一条
+// 路径就少一处能漂移的地方。
+
+fn lum(c: vec3f) -> f32 {
+    return dot(c, vec3f(0.3, 0.59, 0.11));
+}
+
+/// 非可分离模式的标准前置：把色域外的负分量拉到 0（保住明度关系）。
+fn clip_color(c_in: vec3f) -> vec3f {
+    var c = c_in;
+    let l = lum(c);
+    let n = min(c.r, min(c.g, c.b));
+    let x = max(c.r, max(c.g, c.b));
+    if (n < 0.0) { c = l + (c - l) * l / max(l - n, 1e-6); }
+    if (x > 1.0) { c = l + (c - l) * (1.0 - l) / max(x - l, 1e-6); }
+    return c;
+}
+
+fn set_lum(c: vec3f, l: f32) -> vec3f {
+    return clip_color(c + vec3f(l - lum(c)));
+}
+
+/// ⚠ 返回**标量**，不是 vec3f。
+fn sat(c: vec3f) -> f32 {
+    return max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+}
+
+fn set_sat(c: vec3f, s: f32) -> vec3f {
+    let mn = min(c.r, min(c.g, c.b));
+    let mx = max(c.r, max(c.g, c.b));
+    let d = mx - mn;
+    if (d <= 0.0) { return vec3f(0.0, 0.0, 0.0); }
+    return (c - vec3f(mn)) / d * s;
+}
+
+// ---- 可分离：逐通道 ----
+fn b_overlay(b: vec3f, s: vec3f) -> vec3f {
+    return mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(vec3f(0.5), b));
+}
+fn b_darken(b: vec3f, s: vec3f) -> vec3f { return min(b, s); }
+fn b_lighten(b: vec3f, s: vec3f) -> vec3f { return max(b, s); }
+fn b_color_dodge(b: vec3f, s: vec3f) -> vec3f {
+    let z = step(vec3f(0.0), b);
+    let m = min(vec3f(1.0), (1.0 - b) / max(s, vec3f(1e-6)));
+    return m * z;
+}
+fn b_color_burn(b: vec3f, s: vec3f) -> vec3f {
+    let z = step(b, vec3f(1.0));
+    let m = min(vec3f(1.0), 1.0 - (1.0 - b) / max(1.0 - s, vec3f(1e-6)));
+    return m * z + (1.0 - z);
+}
+fn b_hard_light(b: vec3f, s: vec3f) -> vec3f { return b_overlay(s, b); }
+fn b_soft_light(b: vec3f, s: vec3f) -> vec3f {
+    let d = ((16.0 * b - 12.0) * b + 4.0) * b * step(b, vec3f(0.25));
+    return sqrt(max(b, vec3f(0.0))) * step(vec3f(0.5), b) * s + d * (1.0 - s);
+}
+fn b_difference(b: vec3f, s: vec3f) -> vec3f { return abs(b - s); }
+fn b_exclusion(b: vec3f, s: vec3f) -> vec3f { return b + s - 2.0 * b * s; }
+fn b_multiply(b: vec3f, s: vec3f) -> vec3f { return b * s; }
+
+// ---- 非可分离：需要 clip_color / set_lum / set_sat ----
+fn b_hue(b: vec3f, s: vec3f) -> vec3f { return set_lum(set_sat(s, sat(b)), lum(b)); }
+fn b_saturation(b: vec3f, s: vec3f) -> vec3f { return set_lum(set_sat(b, sat(s)), lum(b)); }
+fn b_color_mode(b: vec3f, s: vec3f) -> vec3f { return set_lum(s, lum(b)); }
+fn b_luminosity(b: vec3f, s: vec3f) -> vec3f { return set_lum(b, lum(s)); }
+
+/// 「PS 变体合成」的公共部分：`mode` 选哪一档混合函数，参数 `b` = 目标色、
+/// `s` = 源色。
+///
+/// # 为什么用 mode 标量而不是传函数指针
+///
+/// WGSL **不允许**把函数指针当参数（naga 直接解析失败，实测 2026-10：
+/// `expected template args end, found "->"`）。HLSL 那边用宏一次生成 14 个入口，
+/// WGSL 没有预处理器 —— 于是「共享公式 + 一个判据」是唯一既能共用实现、又不引宏
+/// 的写法。代价是这 14 条管线在片元里多一次分支，而它们本来就是罕见路径
+/// （普通图元走 `fs_main` + 固定功能方程，不进这里）。
+///
+/// ⚠ `mode` 的编号必须与 `BLEND_PS_NAMES` 的下标一致（宿主按下标取入口）。
+fn blend_with_dst(i: VsOut, mode: u32) -> vec4f {
+    let s = shade_source(i);
+    if (s.a <= 0.0) { return vec4f(0.0, 0.0, 0.0, 0.0); }
+    let d = textureSample(g_dst, g_smp, dst_uv(i));
+    let cs = s.rgb / s.a;
+    var cd = vec3f(0.0, 0.0, 0.0);
+    if (d.a > 0.0) { cd = d.rgb / d.a; }
+    var b = vec3f(0.0, 0.0, 0.0);
+    if (mode == 0u)      { b = b_overlay(cd, cs); }
+    else if (mode == 1u) { b = b_darken(cd, cs); }
+    else if (mode == 2u) { b = b_lighten(cd, cs); }
+    else if (mode == 3u) { b = b_color_dodge(cd, cs); }
+    else if (mode == 4u) { b = b_color_burn(cd, cs); }
+    else if (mode == 5u) { b = b_hard_light(cd, cs); }
+    else if (mode == 6u) { b = b_soft_light(cd, cs); }
+    else if (mode == 7u) { b = b_difference(cd, cs); }
+    else if (mode == 8u) { b = b_exclusion(cd, cs); }
+    else if (mode == 9u) { b = b_multiply(cd, cs); }
+    else if (mode == 10u) { b = b_hue(cd, cs); }
+    else if (mode == 11u) { b = b_saturation(cd, cs); }
+    else if (mode == 12u) { b = b_color_mode(cd, cs); }
+    else                 { b = b_luminosity(cd, cs); }
+    let a = s.a;
+    return vec4f((1.0 - a) * cd + a * b, a + d.a * (1.0 - a));
+}
+
+// ---- 14 个入口。顺序与 `zephyra_core::filter::BlendMode` 的枚举声明顺序一致。 ----
+@fragment
+fn fs_overlay(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 0u);
+}
+@fragment
+fn fs_darken(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 1u);
+}
+@fragment
+fn fs_lighten(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 2u);
+}
+@fragment
+fn fs_color_dodge(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 3u);
+}
+@fragment
+fn fs_color_burn(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 4u);
+}
+@fragment
+fn fs_hard_light(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 5u);
+}
+@fragment
+fn fs_soft_light(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 6u);
+}
+@fragment
+fn fs_difference(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 7u);
+}
+@fragment
+fn fs_exclusion(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 8u);
+}
+@fragment
+fn fs_multiply(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 9u);
+}
+@fragment
+fn fs_hue(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 10u);
+}
+@fragment
+fn fs_saturation(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 11u);
+}
+@fragment
+fn fs_color(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 12u);
+}
+@fragment
+fn fs_luminosity(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 13u);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  模糊与投影
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 模糊 pass 画的是一张**铺满离屏 RT 的四边形**，顶点字段的含义与正常图元不同，
+// 于是用 `kind = 4` 分流（表见 HLSL 那份的同名小节）：
+//
+// | 字段       | 正常图元         | 模糊 pass                   |
+// |------------|------------------|-----------------------------|
+// | `kind`     | 0..3（图元类别） | 4                           |
+// | `local`    | 相对四边形中心   | 该片元在源 RT 里的**像素坐标** |
+// | `half_size`| 四边形半宽半高   | 源 RT 的**尺寸**（flat）     |
+// | `corner`   | (圆角, 描边)     | (方向, σ) —— 0 = H，1 = V   |
+// | `uv`       | 纹理 uv          | 片元中心（0..1）             |
+//
+// 之所以能把参数塞进顶点而不是常量缓冲：每个 RT 只有一组参数，省掉一个 uniform
+// buffer 与一次绑定。代价是 `local` 的语义被复用了 —— 用 `kind` 分流，不会串。
+//
+// # 为什么要 H / V 两趟
+//
+// 高斯核在二维上**可分离**：先沿 x 再沿 y，与一次性做二维卷积等价，代价从
+// O(r²) 降到 O(2r)。
+//
+// # 累加器是 **vec4f**，不是 vec3f
+//
+// 四通道**一起**模糊，与 Chrome / Skia 一致。只糊 rgb 会让投影出现硬边：影子颜色
+// 糊开了而覆盖率还是原图的硬边，于是半透明阴影周围出现一圈 alpha 不连续的暗框。
+// 预乘空间里正确的做法是对 `(rgb, a)` 做同一个卷积 —— 出来仍满足 `rgb ≤ a`，
+// 因为卷积是线性且输入逐像素都满足这个不等式。

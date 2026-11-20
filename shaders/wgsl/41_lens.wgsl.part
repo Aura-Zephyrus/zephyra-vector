@@ -1,0 +1,102 @@
+// ═══════════════════════════════════════════════════════════════════════════
+//  透镜（原版 `lens()`）—— 与 HLSL 的 `PSLens` 手抄对应
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 逐字转译 `RoundedRectRefractionWithDispersionShaderString`。与 `fs_refraction`
+// 是**不同的公式**：位移剖面是 `circleMap(1 - -sd / height) * amount`，方向来自
+// `gradSdRoundedRect`（倒角半径 `min(radius * 1.5, min(half_size))`），并按
+// `(cx·cy)/(hx·hy)` 做 7 通道分色。
+
+/// `gradSdRoundedRect` 的逐字转译。
+fn grad_sd_rounded_rect(coord: vec2f, half_size: vec2f, radius: f32, shape_k: f32) -> vec2f {
+    let k = shape_k;
+    if (abs(k - 1.0) < 1e-4) {
+        let corner_coord = abs(coord) - (half_size - vec2f(radius, radius));
+        if (corner_coord.x >= 0.0 || corner_coord.y >= 0.0) {
+            return sign(coord) * normalize(max(corner_coord, vec2f(0.0, 0.0)));
+        } else {
+            let grad_x = step(corner_coord.y, corner_coord.x);
+            return sign(coord) * vec2f(grad_x, 1.0 - grad_x);
+        }
+    }
+    let e = 0.5;
+    var g: vec2f;
+    g.x = sd_round_rect(coord + vec2f(e, 0.0), half_size, radius, shape_k)
+        - sd_round_rect(coord - vec2f(e, 0.0), half_size, radius, shape_k);
+    g.y = sd_round_rect(coord + vec2f(0.0, e), half_size, radius, shape_k)
+        - sd_round_rect(coord - vec2f(0.0, e), half_size, radius, shape_k);
+    return g;
+}
+
+fn circle_map(x: f32) -> f32 {
+    return 1.0 - sqrt(1.0 - x * x);
+}
+
+@fragment
+fn fs_lens(i: VsOut) -> @location(0) vec4f {
+    let half_size = i.half_size;
+    // `offset = -padding` 在本仓恒为 0（见 `offscreen::lens_composite_quad`）。
+    let centered_coord = i.local - half_size;
+    let radius = i.corner.x;
+    let refraction_height = i.color.g;
+    // 原版以负数写入 uniform：沿外法线向内采样 = 放大。
+    let refraction_amount = -i.corner.y;
+
+    let sd = sd_round_rect(centered_coord, half_size, radius, i.shape);
+    let uv = dst_uv(i);
+    if (-sd >= refraction_height) {
+        return textureSampleLevel(g_dst, g_smp, uv, 0.0);
+    }
+    let mask = saturate(-sd / 1.0);
+    let sd_in = min(sd, 0.0);
+
+    let d = circle_map(1.0 - -sd_in / refraction_height) * refraction_amount;
+    let grad_radius = min(radius * 1.5, min(half_size.x, half_size.y));
+    let grad = normalize(grad_sd_rounded_rect(centered_coord, half_size, grad_radius, i.shape));
+    let px2uv = vec2f(dpdx(uv.x), dpdy(uv.y));
+    let base = d * grad * px2uv;
+    let dispersion_intensity =
+        (centered_coord.x * centered_coord.y) / (half_size.x * half_size.y);
+    let dispersed = base * dispersion_intensity;
+
+    var color = vec4f(0.0, 0.0, 0.0, 0.0);
+
+    let red = textureSampleLevel(g_dst, g_smp, saturate2(uv + base + dispersed), 0.0);
+    color.r += red.r / 3.5;
+    color.a += red.a / 7.0;
+
+    let orange =
+        textureSampleLevel(g_dst, g_smp, saturate2(uv + base + dispersed * (2.0 / 3.0)), 0.0);
+    color.r += orange.r / 3.5;
+    color.g += orange.g / 7.0;
+    color.a += orange.a / 7.0;
+
+    let yellow =
+        textureSampleLevel(g_dst, g_smp, saturate2(uv + base + dispersed * (1.0 / 3.0)), 0.0);
+    color.r += yellow.r / 3.5;
+    color.g += yellow.g / 3.5;
+    color.a += yellow.a / 7.0;
+
+    let green = textureSampleLevel(g_dst, g_smp, saturate2(uv + base), 0.0);
+    color.g += green.g / 3.5;
+    color.a += green.a / 7.0;
+
+    let cyan =
+        textureSampleLevel(g_dst, g_smp, saturate2(uv + base - dispersed * (1.0 / 3.0)), 0.0);
+    color.g += cyan.g / 3.5;
+    color.b += cyan.b / 3.0;
+    color.a += cyan.a / 7.0;
+
+    let blue =
+        textureSampleLevel(g_dst, g_smp, saturate2(uv + base - dispersed * (2.0 / 3.0)), 0.0);
+    color.b += blue.b / 3.0;
+    color.a += blue.a / 7.0;
+
+    let purple = textureSampleLevel(g_dst, g_smp, saturate2(uv + base - dispersed), 0.0);
+    color.r += purple.r / 7.0;
+    color.b += purple.b / 3.0;
+    color.a += purple.a / 7.0;
+
+    // 预乘空间：rgb 与 a 一起乘遮罩。
+    return color * mask;
+}

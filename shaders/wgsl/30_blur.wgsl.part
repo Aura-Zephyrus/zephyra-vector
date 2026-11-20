@@ -1,0 +1,67 @@
+fn gauss_weight(i: f32, sigma: f32) -> f32 {
+    // σ ≤ 0 时退化成「不模糊」，避免除零。
+    if (sigma <= 0.0) { return select(0.0, 1.0, i == 0.0); }
+    return exp(-(i * i) / (2.0 * sigma * sigma));
+}
+
+/// 半径 = ⌈3σ⌉，截到 32 —— 32 像素的 σ 已超出「看得清边缘」的范畴，再多是浪费。
+fn blur_radius(sigma: f32) -> f32 {
+    return min(ceil(3.0 * sigma), 32.0);
+}
+
+fn blur_common(i: VsOut, horizontal: bool) -> vec4f {
+    let sigma = i.corner.y;
+    let r = blur_radius(sigma);
+    let size = i.half_size;
+    var sum = vec4f(0.0, 0.0, 0.0, 0.0);
+    var wsum = 0.0;
+    // `[0, r]` 的整数上界。必须给循环上限，否则异常大的 σ 会让它跑几百万次。
+    for (var k: i32 = 0; k <= 32; k = k + 1) {
+        if (f32(k) > r) { break; }
+        let fk = f32(k);
+        var step_v = vec2f(fk, 0.0);
+        if (!horizontal) { step_v = vec2f(0.0, fk); }
+        let w = gauss_weight(fk, sigma);
+        sum = sum + textureSampleLevel(g_tex, g_smp, (i.local + step_v) / size, 0.0) * w;
+        wsum = wsum + w;
+        // 对称项：k = 0 只算一次（否则权重翻倍）。
+        if (k > 0) {
+            sum = sum + textureSampleLevel(g_tex, g_smp, (i.local - step_v) / size, 0.0) * w;
+            wsum = wsum + w;
+        }
+    }
+    // `wsum > 0` 恒成立（k=0 的权重是 1），但仍挡一道：σ 异常时宁可输出全 0
+    // 也不要 NaN —— NaN 会顺着预乘链把整帧污染掉。
+    if (wsum <= 0.0) { return vec4f(0.0, 0.0, 0.0, 0.0); }
+    return sum / wsum;
+}
+
+@fragment
+fn fs_blur_h(i: VsOut) -> @location(0) vec4f {
+    return blur_common(i, true);
+}
+
+@fragment
+fn fs_blur_v(i: VsOut) -> @location(0) vec4f {
+    return blur_common(i, false);
+}
+
+/// 把离屏 RT 的结果**合成**回当前目标。
+///
+/// `corner.y > 0` 时把 rgb 换成一个**常量色**（投影的染色），alpha 保留 —— 那就是
+/// DropShadow 的「剪影 → 模糊 → 染色」三步里的第三步。`corner.y == 0` 时原样透传，
+/// 那就是普通模糊的回放。
+@fragment
+fn fs_composite(i: VsOut) -> @location(0) vec4f {
+    let t = textureSampleLevel(g_tex, g_smp, i.uv, 0.0);
+    let tint_amount = i.corner.y;
+    if (tint_amount <= 0.0) {
+        // 直通。已经是预乘的，别再乘一次 alpha。
+        return t;
+    }
+    // 顶点里带的是**非预乘**的目标颜色。
+    // ⚠ 染色不能整体乘 alpha —— 那会让半透明阴影变成"颜色越淡越看不见"。
+    // 正确做法：保留覆盖率，用目标色替换色相。`color.a` 是阴影浓度。
+    let a = t.a * i.color.a;
+    return vec4f(i.color.rgb * a, a);
+}

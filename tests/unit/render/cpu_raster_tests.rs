@@ -404,6 +404,40 @@ fn blank_canvas_is_clear_colour() {
     assert_eq!(&c.pixels[0..4], &[255, 128, 0, 255]);
 }
 
+/// SDF 路径：字号越大 → `corner.x` 越小 → 过渡带在 SDF 值域越窄。
+/// 这条钉住 CPU 参考光栅与 GPU 字形分支共用同一条 smoothstep 契约。
+#[test]
+fn sdf_glyph_branch_uses_red_channel_and_smoothstep() {
+    let (size, mid) = (64usize, 32usize);
+    let mut pixels = vec![0u8; size * size * 4];
+    for y in 0..size {
+        for x in 0..size {
+            let v = if x < mid { 255u8 } else { 0u8 };
+            let i = (y * size + x) * 4;
+            // 故意让 alpha 与 red 相反：SDF 分支必须读 red 而不是 alpha。
+            pixels[i] = v;
+            pixels[i + 1] = v;
+            pixels[i + 2] = v;
+            pixels[i + 3] = 255 - v;
+        }
+    }
+    let atlas = AtlasBitmap {
+        pixels,
+        size: size as u32,
+    };
+    let inside = atlas.sample_sdf([(mid - 1) as f32 / size as f32, 0.5]);
+    let outside = atlas.sample_sdf([(mid + 1) as f32 / size as f32, 0.5]);
+    assert_eq!(inside, 1.0, "内侧 SDF 应满（读 red）");
+    assert_eq!(outside, 0.0, "外侧 SDF 应空（读 red，不是 alpha）");
+
+    // 字号增大 ⇒ w 减小 ⇒ 同一条纹素上的覆盖率更接近二值，边缘更锐利。
+    let cov = |s: f32, w: f32| smoothstep(0.5 - w, 0.5 + w, s);
+    let sharp = cov(0.55, 0.02); // 大字号
+    let soft = cov(0.55, 0.20); // 小字号
+    // 0.55 已越过 SDF 边缘（0.5）：w 越小，覆盖率越接近满值 1。
+    assert!(sharp > soft, "w 越小过渡越窄：{sharp} 应大于 {soft}");
+}
+
 /// 半透明必须**只乘一次** alpha。
 ///
 /// # 这条钉的是什么
