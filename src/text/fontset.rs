@@ -167,10 +167,7 @@ impl FontSet {
     }
 
     fn has_glyph(source: &AbGlyphSource, ch: char) -> bool {
-        let Ok(face) = rustybuzz::ttf_parser::Face::parse(source.font_bytes(), 0) else {
-            return false;
-        };
-        face.glyph_index(ch).map(|g| g.0 != 0).unwrap_or(false)
+        source.covers(ch)
     }
 
     /// 请求字重高于实际选中字体时，合成一个伪粗体阈值。

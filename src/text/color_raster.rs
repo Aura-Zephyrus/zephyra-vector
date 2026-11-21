@@ -26,11 +26,20 @@ fn extend_t(t: f32, mode: GradientExtend) -> f32 {
 
 fn gradient_at(g: &GradientPaint, x: f32, y: f32) -> Color {
     let t = match g.kind {
-        GradientKind::Linear { x0, y0, x1, y1, .. } => {
-            let dx = x1 - x0;
-            let dy = y1 - y0;
-            let len2 = dx * dx + dy * dy;
-            if len2 < 1e-6 { 0.0 } else { ((x - x0) * dx + (y - y0) * dy) / len2 }
+        GradientKind::Linear { x0, y0, x1, y1, x2, y2 } => {
+            // OpenType：颜色线平行于 p1→p2；求 p 在 p0→p1 上的参数 t，
+            // 满足 p = p0 + t·d + s·e（d = p1-p0, e = p2-p1）。
+            // 用二维叉积解 t = cross(v,e)/cross(d,e)，正交时也退化为标准投影。
+            let (dx, dy) = (x1 - x0, y1 - y0);
+            let (ex, ey) = (x2 - x1, y2 - y1);
+            let (vx, vy) = (x - x0, y - y0);
+            let den = dx * ey - dy * ex;
+            if den.abs() < 1e-6 {
+                let len2 = dx * dx + dy * dy;
+                if len2 < 1e-6 { 0.0 } else { (vx * dx + vy * dy) / len2 }
+            } else {
+                (vx * ey - vy * ex) / den
+            }
         }
         GradientKind::Radial { x0, y0, r0, x1, y1, r1 } => {
             // OpenType 双圆径向渐变：求 |p - c(t)| == r(t) 的最小 t∈[0,1]。
@@ -325,4 +334,53 @@ pub fn compose_color_layers(
         rgba[i * 4 + 3] = (a * 255.0).round() as u8;
     }
     Some((w, h, rgba))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::text::color::{GradientExtend, GradientKind, GradientPaint};
+
+    fn grad(kind: GradientKind) -> GradientPaint {
+        GradientPaint {
+            kind,
+            extend: GradientExtend::Pad,
+            stops: vec![
+                (0.0, Color::rgb(0.0, 0.0, 0.0)),
+                (1.0, Color::rgb(1.0, 1.0, 1.0)),
+            ],
+        }
+    }
+
+    #[test]
+    fn linear_gradient_honors_p2_direction() {
+        // p0=(0,0) p1=(1,0) p2=(1,1) ⇒ 颜色线竖直；任意 y 不改变 t。
+        let g = grad(GradientKind::Linear { x0: 0.0, y0: 0.0, x1: 1.0, y1: 0.0, x2: 1.0, y2: 1.0 });
+        let a = gradient_at(&g, 0.5, 0.0);
+        let b = gradient_at(&g, 0.5, 0.75);
+        // 线性光插值：线性 0.5 编码回 sRGB ≈ 0.735。
+        assert!((a.r - 0.735).abs() < 0.02, "{}", a.r);
+        assert!((b.r - 0.735).abs() < 0.02, "p2 方向未生效: {}", b.r);
+    }
+
+    #[test]
+    fn radial_gradient_two_circle() {
+        // 同心圆 r0=0 r1=1：距中心 0.25 的点 t≈0.25。
+        let g = grad(GradientKind::Radial {
+            x0: 0.0, y0: 0.0, r0: 0.0, x1: 0.0, y1: 0.0, r1: 1.0,
+        });
+        let c = gradient_at(&g, 0.25, 0.0);
+        // 线性 0.25 编码回 sRGB ≈ 0.537。
+        assert!((c.r - 0.537).abs() < 0.02, "{}", c.r);
+    }
+
+    #[test]
+    fn porter_duff_and_multiply() {
+        let src = Color::rgba(0.2, 0.2, 0.2, 0.5); // 非预乘 0.4
+        let dst = Color::rgba(0.3, 0.3, 0.3, 0.5); // 非预乘 0.6
+        let over = blend_pixel(BlendMode::SrcOver, src, dst);
+        assert!((over.a - 0.75).abs() < 0.01, "{}", over.a);
+        let mul = blend_pixel(BlendMode::Multiply, src, dst);
+        assert!(mul.r < over.r, "Multiply 应比 SrcOver 暗: {} vs {}", mul.r, over.r);
+    }
 }

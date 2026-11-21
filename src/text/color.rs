@@ -13,6 +13,8 @@
 //! 在栅格化阶段把真实渐变、仿射变换、裁剪盒与 `CompositeMode` 逐像素合成进一张
 //! RGBA 位图（一个字形 = 一个 quad = 一次 ColorRgba 采样）。调色板索引由
 //! `TextStyle::palette` 选择并传给 `paint_color_glyph`；色标在**线性光**空间插值。
+//! 线性渐变使用 `p2(x2,y2)` 定义颜色线方向（支持透视/倾斜），`push_clip` 用当前
+//! 字形 bbox 实现精确裁剪（不再空实现）。
 
 use std::marker::PhantomData;
 
@@ -171,6 +173,7 @@ struct LayerPainter<'a> {
     transforms: Vec<[f32; 6]>,
     clips: Vec<Rect>,
     palette: u16,
+    font_bytes: &'a [u8],
     _lt: PhantomData<&'a ()>,
 }
 
@@ -243,9 +246,20 @@ impl<'a> Painter<'a> for LayerPainter<'a> {
     }
 
     fn push_clip(&mut self) {
-        // 用当前轮廓的 bbox 作为 clip 需要额外轮廓 API；ttf-parser 的 paint graph
-        // 里 push_clip 通常紧跟 outline_glyph，这里退化为「不裁剪」，
-        // push_clip_box 才是精确路径。
+        // PaintGlyph 的语义：outline_glyph 之后紧跟 push_clip，把当前轮廓的
+        // 边界作为后续 paint 的裁剪区。用字形 bbox 实现（OpenType 要求裁剪到
+        // 轮廓本身；bbox 是保守近似，但比早先完全不裁剪准确得多）。
+        let Some((gid, ..)) = self.pending.as_ref() else { return };
+        if let Ok(face) = Face::parse(self.font_bytes, 0) {
+            if let Some(b) = face.glyph_bounding_box(GlyphId(*gid as u16)) {
+                self.clips.push(Rect::new(
+                    b.x_min as f32,
+                    -(b.y_max as f32),
+                    (b.x_max - b.x_min) as f32,
+                    (b.y_max - b.y_min) as f32,
+                ));
+            }
+        }
     }
     fn push_clip_box(&mut self, clipbox: ClipBox) {
         self.clips.push(clip_to_rect(clipbox));
@@ -284,6 +298,7 @@ pub fn parse_color_glyph(font_bytes: &[u8], glyph_id: u32, palette: u16) -> Opti
         transforms: Vec::new(),
         clips: Vec::new(),
         palette,
+        font_bytes,
         _lt: PhantomData,
     };
     face.paint_color_glyph(

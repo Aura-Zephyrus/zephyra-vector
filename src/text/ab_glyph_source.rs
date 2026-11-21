@@ -97,6 +97,9 @@ pub struct AbGlyphSource {
     applied_variations: Vec<([u8; 4], f32)>,
     /// 当前 CPAL 调色板索引（COLR v1）。
     palette: u16,
+    /// cmap 覆盖查询缓存：`FontSet::select` 每帧对每字符每字体都要查，
+    /// 不能每次都重新 parse 一遍字体表。
+    coverage_cache: RefCell<HashMap<char, bool>>,
 }
 
 impl AbGlyphSource {
@@ -115,6 +118,7 @@ impl AbGlyphSource {
             color_cache: RefCell::new(HashMap::new()),
             applied_variations: Vec::new(),
             palette: 0,
+            coverage_cache: RefCell::new(HashMap::new()),
         })
     }
 
@@ -134,6 +138,20 @@ impl AbGlyphSource {
             return 400;
         };
         face.weight().to_number()
+    }
+
+    /// 字符覆盖查询（带缓存）。`FontSet` 选字体时高频调用，不能每次 parse 表。
+    pub(crate) fn covers(&self, ch: char) -> bool {
+        if let Some(&v) = self.coverage_cache.borrow().get(&ch) {
+            return v;
+        }
+        let v = rustybuzz::ttf_parser::Face::parse(self.font.as_slice(), 0)
+            .ok()
+            .and_then(|face| face.glyph_index(ch))
+            .map(|g| g.0 != 0)
+            .unwrap_or(false);
+        self.coverage_cache.borrow_mut().insert(ch, v);
+        v
     }
 
     /// 字体的 units-per-em（供回退链算 `px / upem` 缩放）。
@@ -493,6 +511,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
                     color_cache: RefCell::new(HashMap::new()),
                     applied_variations: Vec::new(),
             palette: 0,
+            coverage_cache: RefCell::new(HashMap::new()),
                 }),
                 format!("字体 {path} 解析失败（{e}），已退回无文本模式"),
             ),
@@ -504,6 +523,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
                 color_cache: RefCell::new(HashMap::new()),
                 applied_variations: Vec::new(),
             palette: 0,
+            coverage_cache: RefCell::new(HashMap::new()),
             }),
             format!("字体 {path} 是空文件，已退回无文本模式"),
         ),
@@ -514,6 +534,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
                 color_cache: RefCell::new(HashMap::new()),
                 applied_variations: Vec::new(),
             palette: 0,
+            coverage_cache: RefCell::new(HashMap::new()),
             }),
             format!("读不到字体 {path}（{e}），已退回无文本模式"),
         ),
@@ -563,6 +584,7 @@ pub fn from_system_font() -> (TextStack<AbGlyphSource>, String) {
             color_cache: RefCell::new(HashMap::new()),
             applied_variations: Vec::new(),
             palette: 0,
+            coverage_cache: RefCell::new(HashMap::new()),
         }),
         format!(
             "未找到可用系统字体（试过 {} 个路径），已退回无文本模式",

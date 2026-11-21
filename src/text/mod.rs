@@ -47,9 +47,9 @@
 //! - **可变字体轴**：`TextStyle::variations` 通过 `ab_glyph::VariableFont` 设置 fvar 轴，
 //!   ttf-parser 在提取 `glyf` 轮廓时自动应用 gvar；但轴的变化只影响轮廓/步进，
 //!   不做逐帧插值的动画（样式变化时重新栅格化该字形）。
-//! - **彩色字形**：COLR v0/v1 与 CBDT/CBLC 都已接入。COLR paint graph 的渐变、
-//!   transform、clip box 与 composite mode 在栅格化阶段精确合成为 RGBA 位图，
-//!   不再近似为纯色 quad。`TextStyle::lcd` 默认关闭。
+//! - **彩色字形**：COLR v0/v1 与 CBDT/CBLC 都已接入。COLR paint graph 的渐变
+//!   （含 p2 透视方向）、transform、clip（含 PaintGlyph 的轮廓 bbox）与 composite
+//!   在栅格化阶段精确合成为 RGBA 位图。CBDT 仍缺真实字体样本验证 y 偏移。`TextStyle::lcd` 默认关闭。
 //! - **LCD 子像素混合**：shader 用 Skia 12-tap FIR 生成 R/G/B 各自覆盖率，并做
 //!   亮度感知的 sRGB 覆盖校正；alpha 取三通道最大值（Skia 会按 src/dst alpha
 //!   选 min 或 max，当前单 pass 拿不到 dst alpha，故固定取 max）。它仍不是 GPU
