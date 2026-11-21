@@ -23,6 +23,27 @@ fn gamma_correct_coverage(a: f32, src: f32) -> f32 {
     return clamp((out - dst) / denom, 0.0, 1.0);
 }
 
+/// NV12 的 Y 平面 + 交错 UV 平面 → 与 D3D11 NV12 SRV 同形状的 (Y,U,V,1)。
+/// 仅 NV12 片元入口使用；主通道的 `fs_main` 不调用它。
+fn nv12_sample(uv: vec2f) -> vec4f {
+    let y = textureSample(g_tex_y, g_smp, uv).r;
+    let uvp = textureSample(g_tex_uv, g_smp, uv).rg;
+    return vec4f(y, uvp.x, uvp.y, 1.0);
+}
+
+/// BT.601 limited range 的 NV12 → RGB，与 camera `Nv12Planes::to_rgba` 的整数
+/// 近似逐值一致（floor(·/256) 等价于 int 算术右移 8，再 clamp 到 0..255）。
+fn nv12_to_rgb(texel: vec4f) -> vec3f {
+    let y = texel.r * 255.0 - 16.0;
+    let u = texel.g * 255.0 - 128.0;
+    let v = texel.b * 255.0 - 128.0;
+    let yy = y * 298.0;
+    let c = floor(vec3f(yy + 409.0 * v,
+                        yy - 100.0 * u - 208.0 * v,
+                        yy + 516.0 * u) / 256.0);
+    return clamp(c / 255.0, vec3f(0.0), vec3f(1.0));
+}
+
 const FIR_R = array<f32, 12>(3.0, 11.0, 28.0, 51.0, 64.0, 57.0, 36.0, 16.0, 5.0, 1.0, 0.0, 0.0);
 const FIR_G = array<f32, 12>(0.0, 2.0, 8.0, 22.0, 43.0, 61.0, 61.0, 43.0, 22.0, 8.0, 2.0, 0.0);
 const FIR_B = array<f32, 12>(0.0, 0.0, 1.0, 5.0, 16.0, 36.0, 57.0, 64.0, 51.0, 28.0, 11.0, 3.0);
@@ -31,7 +52,8 @@ const FIR_B = array<f32, 12>(0.0, 0.0, 1.0, 5.0, 16.0, 36.0, 57.0, 64.0, 51.0, 2
 ///
 /// 抽出来是因为「算出源色」这部分与混合模式**完全无关**，共用一份才不会出现
 /// 「某个混合模式下的圆角矩形与默认路径长得不一样」这类漂移。
-fn shade_source(i: VsOut) -> vec4f {
+/// `nv12 = false` 是 RGBA 主路径；`true` 只由 `21_nv12.wgsl.part` 的变体入口传入。
+fn shade_source(i: VsOut, nv12: bool) -> vec4f {
     // 字形 LCD 分支需要「每像素的 uv 步长」。导数在分支外求：WGSL 的 uniform
     // 分析会拒绝非一致控制流里的 dpdx。
     let duv_dx = dpdx(i.uv.x);
@@ -118,7 +140,11 @@ fn shade_source(i: VsOut) -> vec4f {
 
     // kind == 2：图像。采样当前批绑定的纹理（每批一种）。
     if (i.kind > 1.5) {
-        let texel = textureSample(g_tex, g_smp, i.uv);
+        var texel = textureSample(g_tex, g_smp, i.uv);
+        if (nv12) {
+            // NV12 变体：两平面采样后转直通 RGB，alpha 恒 1。
+            texel = vec4f(nv12_to_rgb(nv12_sample(i.uv)), 1.0);
+        }
         var a = texel.a * i.color.a;
         // ⚠ 圆角遮罩**必须**以 `corner.x > 0` 为条件，不能无条件施加。
         //
@@ -171,5 +197,5 @@ fn shade_source(i: VsOut) -> vec4f {
 /// 默认路径：源色交给**固定功能混合方程**（`SrcOver`，或 `runs` 段指定的系数对）。
 @fragment
 fn fs_main(i: VsOut) -> @location(0) vec4f {
-    return shade_source(i);
+    return shade_source(i, false);
 }

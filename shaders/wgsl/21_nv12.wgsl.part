@@ -1,0 +1,73 @@
+// ═══════════════════════════════════════════════════════════════════════════
+//  NV12 纹理的片元入口变体（共 15 个）
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 与 HLSL 的 `PSMainNv12` / `PS*Nv12` 一一对应：图像分支把 YUV 转 RGB，
+// 其余图元（矩形 / 字形 / 多边形）走的是同一份 `shade_source`，`nv12=true`
+// 只在 `kind > 1.5` 的图像分支里生效 —— 字形与 SDF 不会被改色。
+//
+// ⚠ Vulkan 侧需要为这些入口单独建管线，并额外绑定 group 0 的 binding 2/3
+// （NV12 的 Y / UV 两个 plane view）。若宿主选择上传前把 NV12 转成 RGBA，
+// 则直接用原来的 `fs_main` / `fs_*` 入口，不必绑这两格。
+
+@fragment
+fn fs_main_nv12(i: VsOut) -> @location(0) vec4f {
+    return shade_source(i, true);
+}
+
+@fragment
+fn fs_overlay_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 0u, true);
+}
+@fragment
+fn fs_darken_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 1u, true);
+}
+@fragment
+fn fs_lighten_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 2u, true);
+}
+@fragment
+fn fs_color_dodge_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 3u, true);
+}
+@fragment
+fn fs_color_burn_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 4u, true);
+}
+@fragment
+fn fs_hard_light_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 5u, true);
+}
+@fragment
+fn fs_soft_light_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 6u, true);
+}
+@fragment
+fn fs_difference_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 7u, true);
+}
+@fragment
+fn fs_exclusion_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 8u, true);
+}
+@fragment
+fn fs_multiply_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 9u, true);
+}
+@fragment
+fn fs_hue_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 10u, true);
+}
+@fragment
+fn fs_saturation_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 11u, true);
+}
+@fragment
+fn fs_color_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 12u, true);
+}
+@fragment
+fn fs_luminosity_nv12(i: VsOut) -> @location(0) vec4f {
+    return blend_with_dst(i, 13u, true);
+}

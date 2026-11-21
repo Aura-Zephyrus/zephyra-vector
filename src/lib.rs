@@ -19,6 +19,7 @@ pub mod decoration;
 pub mod filter;
 pub mod geom;
 pub mod icon;
+pub mod nv12;
 pub mod paint;
 pub mod shaders;
 pub mod render {
@@ -57,6 +58,9 @@ mod migrated_glyph_atlas_bmp;
 #[cfg(test)]
 #[path = "../tests/unit/migrated_text_roundtrip.rs"]
 mod migrated_text_roundtrip;
+#[cfg(test)]
+#[path = "../tests/unit/nv12_tests.rs"]
+mod nv12_tests;
 #[cfg(test)]
 #[path = "../tests/unit/shader_sync_tests.rs"]
 mod shader_sync_tests;

@@ -90,6 +90,32 @@ fn committed_dxbc_matches_hlsl_sources() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// NV12 变体的 `.bin` 也必须由 `zephyra_nv12.hlsl` 逐字节重编得到。
+///
+/// 与默认那套分开钉住：默认入口的字节码是 RGBA 路径的回归基准（一字未改），
+/// 变体那套是新增能力；任一处「改了源忘重编」都会在这里红，而不是在 GPU 上
+/// 表现成「NV12 画面颜色不对」。
+#[test]
+fn committed_nv12_dxbc_matches_hlsl_sources() {
+    let Some(fxc) = fxc() else {
+        eprintln!("跳过：找不到 fxc.exe（设置 FXC_PATH 可指定）");
+        return;
+    };
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let src = dir.join("hlsl").join("zephyra_nv12.hlsl");
+    let dxbc = dir.join("dxbc");
+    let tmp = std::env::temp_dir().join(format!("zephyra_nv12_shader_gate_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("建临时目录失败");
+
+    for (name, _) in crate::shaders::PS_NV12_VARIANTS {
+        let file = format!("zephyra.{name}.ps.bin");
+        let out = tmp.join(&file);
+        compile(&fxc, "ps_5_0", name, &src, &out);
+        assert_bytes_equal(&dxbc.join(&file), &out, name);
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 fn assert_bytes_equal(expected: &PathBuf, actual: &PathBuf, name: &str) {
     let a = std::fs::read(expected).unwrap_or_else(|e| panic!("读 {expected:?} 失败: {e}"));
     let b = std::fs::read(actual).unwrap_or_else(|e| panic!("读 {actual:?} 失败: {e}"));

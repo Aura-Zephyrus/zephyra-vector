@@ -11,11 +11,14 @@
 pub const HLSL_ENTRY: &str = include_str!("../shaders/hlsl/zephyra.hlsl");
 
 /// WGSL 各分段，按声明顺序（必须保持：WGSL 要求函数先声明后使用）。
-const WGSL_PARTS: [&str; 9] = [
+const WGSL_PARTS: [&str; 10] = [
     include_str!("../shaders/wgsl/00_common.wgsl.part"),
     include_str!("../shaders/wgsl/01_sdf.wgsl.part"),
     include_str!("../shaders/wgsl/10_shade.wgsl.part"),
     include_str!("../shaders/wgsl/20_blend.wgsl.part"),
+    // NV12 变体入口必须排在 10_shade / 20_blend 之后（WGSL 要求先声明后使用），
+    // 且排在 30_blur 之前 —— 与混合入口的顺序契约一致。
+    include_str!("../shaders/wgsl/21_nv12.wgsl.part"),
     include_str!("../shaders/wgsl/30_blur.wgsl.part"),
     include_str!("../shaders/wgsl/40_refraction.wgsl.part"),
     include_str!("../shaders/wgsl/41_lens.wgsl.part"),
@@ -166,6 +169,130 @@ pub mod ps {
     pub const PSHighlight: &[u8] = include_bytes!("../shaders/dxbc/zephyra.PSHighlight.ps.bin");
     pub const PSInnerShadow: &[u8] = include_bytes!("../shaders/dxbc/zephyra.PSInnerShadow.ps.bin");
     pub const PSLens: &[u8] = include_bytes!("../shaders/dxbc/zephyra.PSLens.ps.bin");
+}
+
+/// NV12 纹理的像素着色器变体表（15 个：`PSMainNv12` + 14 个混合模式）。
+///
+/// 与 [`PS_VARIANTS`] 的区别只在图像分支多一次 YUV→RGB（BT.601 limited range），
+/// 矩形 / 字形 / 多边形走的是同一份 `ShadeSource` 代码，行为逐值不变。
+/// 这些字节码由 `shaders/hlsl/zephyra_nv12.hlsl` 打开 `ZEPHYRA_NV12` 宏后用 fxc
+/// 编译生成；默认 `zephyra.hlsl` 编出的那 25 个入口**一字未改**。
+pub const PS_NV12_VARIANTS: [(&str, &[u8]); 15] = [
+    (
+        "PSMainNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSMainNv12.ps.bin"),
+    ),
+    (
+        "PSOverlayNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSOverlayNv12.ps.bin"),
+    ),
+    (
+        "PSDarkenNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSDarkenNv12.ps.bin"),
+    ),
+    (
+        "PSLightenNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSLightenNv12.ps.bin"),
+    ),
+    (
+        "PSColorDodgeNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSColorDodgeNv12.ps.bin"),
+    ),
+    (
+        "PSColorBurnNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSColorBurnNv12.ps.bin"),
+    ),
+    (
+        "PSHardLightNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSHardLightNv12.ps.bin"),
+    ),
+    (
+        "PSSoftLightNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSSoftLightNv12.ps.bin"),
+    ),
+    (
+        "PSDifferenceNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSDifferenceNv12.ps.bin"),
+    ),
+    (
+        "PSExclusionNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSExclusionNv12.ps.bin"),
+    ),
+    (
+        "PSMultiplyNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSMultiplyNv12.ps.bin"),
+    ),
+    (
+        "PSHueNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSHueNv12.ps.bin"),
+    ),
+    (
+        "PSSaturationNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSSaturationNv12.ps.bin"),
+    ),
+    (
+        "PSColorNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSColorNv12.ps.bin"),
+    ),
+    (
+        "PSLuminosityNv12",
+        include_bytes!("../shaders/dxbc/zephyra.PSLuminosityNv12.ps.bin"),
+    ),
+];
+
+/// 具名 NV12 变体常量，与 [`ps`] 一一对应（只含主路径 + 14 个混合）。
+#[allow(non_upper_case_globals)]
+pub mod ps_nv12 {
+    pub const PSMainNv12: &[u8] = include_bytes!("../shaders/dxbc/zephyra.PSMainNv12.ps.bin");
+    pub const PSOverlayNv12: &[u8] = include_bytes!("../shaders/dxbc/zephyra.PSOverlayNv12.ps.bin");
+    pub const PSDarkenNv12: &[u8] = include_bytes!("../shaders/dxbc/zephyra.PSDarkenNv12.ps.bin");
+    pub const PSLightenNv12: &[u8] = include_bytes!("../shaders/dxbc/zephyra.PSLightenNv12.ps.bin");
+    pub const PSColorDodgeNv12: &[u8] =
+        include_bytes!("../shaders/dxbc/zephyra.PSColorDodgeNv12.ps.bin");
+    pub const PSColorBurnNv12: &[u8] =
+        include_bytes!("../shaders/dxbc/zephyra.PSColorBurnNv12.ps.bin");
+    pub const PSHardLightNv12: &[u8] =
+        include_bytes!("../shaders/dxbc/zephyra.PSHardLightNv12.ps.bin");
+    pub const PSSoftLightNv12: &[u8] =
+        include_bytes!("../shaders/dxbc/zephyra.PSSoftLightNv12.ps.bin");
+    pub const PSDifferenceNv12: &[u8] =
+        include_bytes!("../shaders/dxbc/zephyra.PSDifferenceNv12.ps.bin");
+    pub const PSExclusionNv12: &[u8] =
+        include_bytes!("../shaders/dxbc/zephyra.PSExclusionNv12.ps.bin");
+    pub const PSMultiplyNv12: &[u8] =
+        include_bytes!("../shaders/dxbc/zephyra.PSMultiplyNv12.ps.bin");
+    pub const PSHueNv12: &[u8] = include_bytes!("../shaders/dxbc/zephyra.PSHueNv12.ps.bin");
+    pub const PSSaturationNv12: &[u8] =
+        include_bytes!("../shaders/dxbc/zephyra.PSSaturationNv12.ps.bin");
+    pub const PSColorNv12: &[u8] = include_bytes!("../shaders/dxbc/zephyra.PSColorNv12.ps.bin");
+    pub const PSLuminosityNv12: &[u8] =
+        include_bytes!("../shaders/dxbc/zephyra.PSLuminosityNv12.ps.bin");
+}
+
+/// 按 `BlendMode` 的下标取 NV12 变体的字节码。
+///
+/// `0..=14`（系数可表达模式）都走 `PSMainNv12`，与宿主端「`None` ⇒ `ps[0]`」
+/// 的规则对称；`15..=28` 与 `ps_for_blend_mode` 的 `Some(k)` 一一对应。
+/// 非 NV12 纹理请用宿主自己的 `ps_for_blend_mode` + [`ps`] 表 —— 那才是 RGBA 路径。
+pub const fn nv12_ps_for_blend_mode(i: usize) -> Option<&'static [u8]> {
+    match i {
+        0..=14 => Some(ps_nv12::PSMainNv12),
+        15 => Some(ps_nv12::PSOverlayNv12),
+        16 => Some(ps_nv12::PSDarkenNv12),
+        17 => Some(ps_nv12::PSLightenNv12),
+        18 => Some(ps_nv12::PSColorDodgeNv12),
+        19 => Some(ps_nv12::PSColorBurnNv12),
+        20 => Some(ps_nv12::PSHardLightNv12),
+        21 => Some(ps_nv12::PSSoftLightNv12),
+        22 => Some(ps_nv12::PSDifferenceNv12),
+        23 => Some(ps_nv12::PSExclusionNv12),
+        24 => Some(ps_nv12::PSMultiplyNv12),
+        25 => Some(ps_nv12::PSHueNv12),
+        26 => Some(ps_nv12::PSSaturationNv12),
+        27 => Some(ps_nv12::PSColorNv12),
+        28 => Some(ps_nv12::PSLuminosityNv12),
+        _ => None,
+    }
 }
 
 /// 着色器资产目录（供同步门禁在磁盘上读源、重编比对）。

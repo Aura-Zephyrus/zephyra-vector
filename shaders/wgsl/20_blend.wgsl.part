@@ -107,8 +107,8 @@ fn b_luminosity(b: vec3f, s: vec3f) -> vec3f { return set_lum(b, lum(s)); }
 /// （普通图元走 `fs_main` + 固定功能方程，不进这里）。
 ///
 /// ⚠ `mode` 的编号必须与 `BLEND_PS_NAMES` 的下标一致（宿主按下标取入口）。
-fn blend_with_dst(i: VsOut, mode: u32) -> vec4f {
-    let s = shade_source(i);
+fn blend_with_dst(i: VsOut, mode: u32, nv12: bool) -> vec4f {
+    let s = shade_source(i, nv12);
     if (s.a <= 0.0) { return vec4f(0.0, 0.0, 0.0, 0.0); }
     let d = textureSample(g_dst, g_smp, dst_uv(i));
     let cs = s.rgb / s.a;
@@ -136,59 +136,59 @@ fn blend_with_dst(i: VsOut, mode: u32) -> vec4f {
 // ---- 14 个入口。顺序与 `zephyra_core::filter::BlendMode` 的枚举声明顺序一致。 ----
 @fragment
 fn fs_overlay(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 0u);
+    return blend_with_dst(i, 0u, false);
 }
 @fragment
 fn fs_darken(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 1u);
+    return blend_with_dst(i, 1u, false);
 }
 @fragment
 fn fs_lighten(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 2u);
+    return blend_with_dst(i, 2u, false);
 }
 @fragment
 fn fs_color_dodge(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 3u);
+    return blend_with_dst(i, 3u, false);
 }
 @fragment
 fn fs_color_burn(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 4u);
+    return blend_with_dst(i, 4u, false);
 }
 @fragment
 fn fs_hard_light(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 5u);
+    return blend_with_dst(i, 5u, false);
 }
 @fragment
 fn fs_soft_light(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 6u);
+    return blend_with_dst(i, 6u, false);
 }
 @fragment
 fn fs_difference(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 7u);
+    return blend_with_dst(i, 7u, false);
 }
 @fragment
 fn fs_exclusion(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 8u);
+    return blend_with_dst(i, 8u, false);
 }
 @fragment
 fn fs_multiply(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 9u);
+    return blend_with_dst(i, 9u, false);
 }
 @fragment
 fn fs_hue(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 10u);
+    return blend_with_dst(i, 10u, false);
 }
 @fragment
 fn fs_saturation(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 11u);
+    return blend_with_dst(i, 11u, false);
 }
 @fragment
 fn fs_color(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 12u);
+    return blend_with_dst(i, 12u, false);
 }
 @fragment
 fn fs_luminosity(i: VsOut) -> @location(0) vec4f {
-    return blend_with_dst(i, 13u);
+    return blend_with_dst(i, 13u, false);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

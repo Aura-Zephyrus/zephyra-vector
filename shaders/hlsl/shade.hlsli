@@ -1,4 +1,24 @@
 
+#ifdef ZEPHYRA_NV12
+/// BT.601 limited range 的 NV12 → RGB，与 `zephyra-camera::Nv12Planes::to_rgba`
+/// 的整数近似逐值一致（右移 8 位 + clamp 到 0..255）。
+///
+/// 采样 NV12 SRV 得到的 float4 是 `(Y/255, U/255, V/255, 1)`；本函数把它变成
+/// 预乘空间图像分支能直接用的直通 RGB。只在定义了 `ZEPHYRA_NV12` 的变体入口
+/// （`zephyra_nv12.hlsl`）里编进这段代码，默认 `PSMain` 不含一条相关指令。
+float3 nv12_to_rgb(float4 texel) {
+    float y = texel.r * 255.0f - 16.0f;
+    float u = texel.g * 255.0f - 128.0f;
+    float v = texel.b * 255.0f - 128.0f;
+    float yy = y * 298.0f;
+    // `floor(x / 256)` 等价于 camera 侧 int 的算术右移 8（含负数）。
+    float3 c = floor(float3(yy + 409.0f * v,
+                            yy - 100.0f * u - 208.0f * v,
+                            yy + 516.0f * u) / 256.0f);
+    return clamp(c / 255.0f, 0.0f, 1.0f);
+}
+#endif
+
 // 覆盖率对比度预扭曲，照 Skia `SkMaskGamma::apply_contrast`：
 // `a' = a + (1-a) * contrast * a`（默认 contrast = 0.5，SK_GAMMA_CONTRAST）。
 // 线性 alpha 混合会把细笔画冲淡；预扭曲让中间覆盖率略暗，小字更实、边缘更干净。
@@ -281,6 +301,11 @@ float4 ShadeSource(VSOut i) {
     // kind == 2：图像。采样当前绑定的纹理（每批一种）。
     if (i.kind > 1.5) {
         float4 texel = g_tex.Sample(g_smp, i.uv);
+#ifdef ZEPHYRA_NV12
+        // NV12 变体：把 (Y,U,V) 转成直通 RGB，alpha 恒 1（视频帧没有透明通道）。
+        // 这段只编进 PSMainNv12 / PS*Nv12 变体；默认 PSMain 的字节码不受影响。
+        texel = float4(nv12_to_rgb(texel), 1.0f);
+#endif
         float a = texel.a * i.color.a;
         // tint 是**乘算**：图标要染色时用它，而不是改纹理内容。
         //

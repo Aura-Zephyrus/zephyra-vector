@@ -72,6 +72,11 @@ struct VsOut {
 // group 1：可分离 / 非可分离混合模式要读**目标**。单独一个 group，于是只用
 // group 0 的那些 pass 不必绑一张多余的纹理。
 @group(1) @binding(0) var g_dst: texture_2d<f32>;
+// NV12 变体专用：D3D11 用一张 NV12 SRV 直接给出 (Y,U,V,1)；Vulkan 的多平面
+// 图像必须分别建 plane view，Y(r8) 绑 binding 2、交错 UV(rg8) 绑 binding 3。
+// 主通道的 `fs_main` 不引用它们，所以旧管线不必绑这两格。
+@group(0) @binding(2) var g_tex_y: texture_2d<f32>;
+@group(0) @binding(3) var g_tex_uv: texture_2d<f32>;
 
 @vertex
 fn vs_main(i: VsIn) -> VsOut {

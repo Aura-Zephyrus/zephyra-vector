@@ -140,8 +140,16 @@ float3 BLuminosity(float3 b, float3 s) { return SetLum(b, Lum(s)); }
 /// 生成一个「PS 变体合成」入口。
 ///
 /// `expr` 求的是**非预乘**的 `B`，参数 `b` = 目标色、`s` = 源色。
+///
+/// `ZEPHYRA_NV12` 变体把入口名统一加 `Nv12` 后缀，于是同一份宏能编出两套 PS：
+/// 默认那套逐字节不变，NV12 那套只在图像分支多一次 YUV→RGB（见 shade.hlsli）。
+#ifdef ZEPHYRA_NV12
+#define ZEPHYRA_PS_NAME(name) name##Nv12
+#else
+#define ZEPHYRA_PS_NAME(name) name
+#endif
 #define MAKE_BLEND_PS(entry, expr)                                 \
-    float4 entry(VSOut i) : SV_TARGET {                            \
+    float4 ZEPHYRA_PS_NAME(entry)(VSOut i) : SV_TARGET {           \
         float4 s = ShadeSource(i);                                 \
         if (s.a <= 0.0) { return float4(0.0, 0.0, 0.0, 0.0); }     \
         float4 d = g_dst.Sample(g_smp, DstUv(i));                  \
