@@ -274,7 +274,12 @@ float4 ShadeSource(VSOut i) {
             cov.g = gamma_correct_coverage(cov.g, src_rgb.g);
             cov.b = gamma_correct_coverage(cov.b, src_rgb.b);
             out_rgb = i.color.rgb * cov;
-            coverage = max(cov.r, max(cov.g, cov.b));
+            // alpha 的取值按 Skia：目标更不透明时用 min/max 中较保守的一个，
+            // 避免半透明背景上的彩边。g_dst 未刷新时读到 alpha=0 ⇒ 退化为 max。
+            float dst_a = g_dst.Sample(g_smp, DstUv(i)).a;
+            float lo = min(cov.r, min(cov.g, cov.b));
+            float hi = max(cov.r, max(cov.g, cov.b));
+            coverage = (i.color.a - 1.0f) < dst_a ? lo : hi;
             per_channel_rgb = true;
         } else if (mode < 5.5) {
             // CBDT/CBLC 彩色位图：RGBA 已解码在图集里，alpha 即覆盖率；
