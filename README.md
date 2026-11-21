@@ -8,7 +8,7 @@
 
 - `core` / `filter` / `decoration`：纯数据类型与数学
 - `geom` / `icon`：路径、三角化、SVG 解析
-- `text`：`GlyphSource` / `TextStack` / `GlyphAtlas`，GSUB/GPOS、BiDi、UAX #14、COLR v0/v1、CBDT/CBLC、可变字体、连字符、路径/旋转
+- `text`：`GlyphSource` / `TextStack` / `GlyphAtlas`，GSUB/GPOS、BiDi、UAX #14、COLR v0/v1（paint graph 精确栅格合成：渐变/变换/裁剪/混合）、CBDT/CBLC、可变字体、连字符、路径/旋转
 - `render`：DisplayList → 顶点流、裁剪、离屏规划、CPU 参考光栅
 - `shaders`：HLSL/WGSL 源与预编译 DXBC；主仓通过 `zephyra_fx::shaders` 消费
 

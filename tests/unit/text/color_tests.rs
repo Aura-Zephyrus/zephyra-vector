@@ -33,6 +33,10 @@ fn colr_layers_are_parsed_from_real_emoji_font() {
         panic!("Segoe UI Emoji 应有 COLR v1 分层，却一个都没解析到");
     };
     assert!(!layers.is_empty(), "{ch} 应有至少一层");
+    assert!(
+        layers.iter().any(|l| l.gradient.is_some()),
+        "Segoe UI Emoji 的 paint graph 应含真实渐变，而不是被压成纯色"
+    );
     let colorful = layers
         .iter()
         .any(|l| layers.iter().any(|o| o.color != l.color));
@@ -40,7 +44,7 @@ fn colr_layers_are_parsed_from_real_emoji_font() {
 }
 
 #[test]
-fn color_glyph_expands_into_one_quad_per_layer() {
+fn color_glyph_is_one_exact_rgba_quad() {
     let Some(mut src) = emoji_source() else {
         return;
     };
@@ -54,9 +58,8 @@ fn color_glyph_expands_into_one_quad_per_layer() {
         }
     }
     let Some(ch) = colored else { return };
-    let expected = src.glyph_id(ch);
-    let expected = src.color_layers(expected).unwrap().len();
 
+    // paint graph 已精确合成进一张 RGBA 位图：一个 base 字形 = 一个 quad。
     let mut stack = TextStack::new(emoji_source().unwrap());
     let style = TextStyle {
         size: 32.0,
@@ -65,11 +68,9 @@ fn color_glyph_expands_into_one_quad_per_layer() {
     let shaped = stack.shape(&ch.to_string(), &style, None);
     let (_, quads) = stack.glyph_quads(&shaped, Point::ZERO, &style).unwrap();
     let glyph_quads: Vec<_> = quads.iter().filter(|q| q.kind == kind::GLYPH).collect();
-    assert_eq!(glyph_quads.len(), expected, "每层一个 quad");
-    assert!(
-        glyph_quads.iter().all(|q| q.color.is_some() && q.color_glyph),
-        "彩色层应带独立颜色与 color_glyph 标记"
-    );
+    assert_eq!(glyph_quads.len(), 1, "整张 paint graph 应合成一个 quad");
+    assert_eq!(glyph_quads[0].mask, crate::paint::GlyphMask::ColorRgba);
+    assert!(glyph_quads[0].color_glyph);
 }
 
 #[test]

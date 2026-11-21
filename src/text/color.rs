@@ -7,13 +7,12 @@
 //! 与 `colr::Painter` 把每层的轮廓 glyph、颜色以及当前变换/裁剪回调出来，我们收成
 //! `ColorLayer` 即可，零新增依赖。
 //!
-//! # 本实现的取舍
+//! # 精确合成
 //!
-//! - 渐变取第一个不透明色标作为纯色（MSDF quad 只能一个颜色）。
-//! - 调色板固定 palette 0（与 `paint_color_glyph(..., 0, ...)` 一致）。
-//! - `CompositeMode` 记录进 `ColorLayer::blend`，但单条 `Command::Text` 只有一个混合
-//!   状态，当前按 SourceOver 顺序叠加；非 SourceOver 的层混合是已知近似。
-//! - transform / clip box 已实现，作用到 quad 几何上。
+//! COLR 层不再展开成多片纯色 MSDF quad，而是由 [`crate::text::color_raster`]
+//! 在栅格化阶段把真实渐变、仿射变换、裁剪盒与 `CompositeMode` 逐像素合成进一张
+//! RGBA 位图（一个字形 = 一个 quad = 一次 ColorRgba 采样）。调色板固定 palette 0，
+//! 与 `paint_color_glyph(..., 0, ...)` 一致。
 
 use std::marker::PhantomData;
 
@@ -23,13 +22,59 @@ use rustybuzz::ttf_parser::{Face, GlyphId, RgbaColor, Tag, Transform};
 use crate::core::{Color, Rect};
 use crate::filter::BlendMode;
 
+/// 渐变的延展方式（COLR `GradientExtend`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GradientExtend {
+    Pad,
+    Repeat,
+    Reflect,
+}
+
+/// COLR v1 渐变几何（字体单位，y-up）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum GradientKind {
+    Linear {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+    },
+    Radial {
+        x0: f32,
+        y0: f32,
+        r0: f32,
+        x1: f32,
+        y1: f32,
+        r1: f32,
+    },
+    Sweep {
+        cx: f32,
+        cy: f32,
+        start: f32,
+        end: f32,
+    },
+}
+
+/// 一个真实的渐变（色标 + 几何 + 延展），用于栅格化时逐像素求值。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GradientPaint {
+    pub kind: GradientKind,
+    pub extend: GradientExtend,
+    /// `(offset, color)`，按 offset 升序。
+    pub stops: Vec<(f32, Color)>,
+}
+
 /// COLR 的一层：一个字形 id + 它在当前调色板里的颜色及几何修饰。
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ColorLayer {
     /// 该层的字形 id（在字体里是普通 glyph id，可独立栅格化）。
     pub glyph_id: u32,
-    /// 该层颜色（来自 CPAL 调色板 0）。
+    /// 该层颜色（纯色 paint；渐变层为第一个色标，仅供调试显示）。
     pub color: Color,
+    /// 该层的真实渐变（若 paint 是渐变）。栅格化时逐像素求值，不再近似为纯色。
+    pub gradient: Option<GradientPaint>,
     /// paint graph 的仿射变换 `[a,b,c,d,e,f]`（字体单位）。
     pub transform: Option<[f32; 6]>,
     /// paint graph 的裁剪盒（字体单位，已转成 y-down）。
@@ -92,19 +137,31 @@ fn blend_from(mode: CompositeMode) -> Option<BlendMode> {
     })
 }
 
-/// 渐变的第一个不透明色标；若全透明则退到第一个。
-fn gradient_color<'a>(stops: impl Iterator<Item = rustybuzz::ttf_parser::colr::ColorStop>) -> Color {
-    let mut first = None;
-    for stop in stops {
-        let c = rgba(stop.color);
-        if first.is_none() {
-            first = Some(c);
-        }
-        if c.a > 0.5 {
-            return c;
-        }
+fn collect_stops<'a>(
+    stops: impl Iterator<Item = rustybuzz::ttf_parser::colr::ColorStop>,
+) -> Vec<(f32, Color)> {
+    let mut v: Vec<_> = stops
+        .map(|s| (s.stop_offset, rgba(s.color)))
+        .collect();
+    v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    v
+}
+
+fn extend_of(e: rustybuzz::ttf_parser::colr::GradientExtend) -> GradientExtend {
+    match e {
+        rustybuzz::ttf_parser::colr::GradientExtend::Pad => GradientExtend::Pad,
+        rustybuzz::ttf_parser::colr::GradientExtend::Repeat => GradientExtend::Repeat,
+        rustybuzz::ttf_parser::colr::GradientExtend::Reflect => GradientExtend::Reflect,
     }
-    first.unwrap_or(Color::rgb(1.0, 1.0, 1.0))
+}
+
+fn representative(stops: &[(f32, Color)]) -> Color {
+    stops
+        .iter()
+        .find(|(_, c)| c.a > 0.5)
+        .or_else(|| stops.first())
+        .map(|(_, c)| *c)
+        .unwrap_or(Color::rgb(1.0, 1.0, 1.0))
 }
 
 /// 收集 `paint_color_glyph` 回调出的「轮廓 + 颜色 + 变换/裁剪」。
@@ -136,16 +193,47 @@ impl<'a> Painter<'a> for LayerPainter<'a> {
     }
 
     fn paint(&mut self, paint: Paint<'a>) {
-        let color = match paint {
-            Paint::Solid(c) => rgba(c),
-            Paint::LinearGradient(g) => gradient_color(g.stops(0, &[])),
-            Paint::RadialGradient(g) => gradient_color(g.stops(0, &[])),
-            Paint::SweepGradient(g) => gradient_color(g.stops(0, &[])),
+        let (color, gradient) = match paint {
+            Paint::Solid(c) => (rgba(c), None),
+            Paint::LinearGradient(g) => {
+                let stops = collect_stops(g.stops(0, &[]));
+                let gp = GradientPaint {
+                    kind: GradientKind::Linear {
+                        x0: g.x0, y0: g.y0, x1: g.x1, y1: g.y1, x2: g.x2, y2: g.y2,
+                    },
+                    extend: extend_of(g.extend),
+                    stops: stops.clone(),
+                };
+                (representative(&stops), Some(gp))
+            }
+            Paint::RadialGradient(g) => {
+                let stops = collect_stops(g.stops(0, &[]));
+                let gp = GradientPaint {
+                    kind: GradientKind::Radial {
+                        x0: g.x0, y0: g.y0, r0: g.r0, x1: g.x1, y1: g.y1, r1: g.r1,
+                    },
+                    extend: extend_of(g.extend),
+                    stops: stops.clone(),
+                };
+                (representative(&stops), Some(gp))
+            }
+            Paint::SweepGradient(g) => {
+                let stops = collect_stops(g.stops(0, &[]));
+                let gp = GradientPaint {
+                    kind: GradientKind::Sweep {
+                        cx: g.center_x, cy: g.center_y, start: g.start_angle, end: g.end_angle,
+                    },
+                    extend: extend_of(g.extend),
+                    stops: stops.clone(),
+                };
+                (representative(&stops), Some(gp))
+            }
         };
         if let Some((glyph_id, transform, clip, blend)) = self.pending.take() {
             self.layers.push(ColorLayer {
                 glyph_id,
                 color,
+                gradient,
                 transform,
                 clip,
                 blend,

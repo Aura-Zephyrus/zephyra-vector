@@ -692,22 +692,11 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
         //
         // ⚠ 两条路径的**顺序不可交换**：命中缓存的也要走一趟（`touch`），否则上面
         // 那条"静止后连锁淘汰"的坑就回来了。
-        // 复用同一块缓冲收集"本字形要入图集的 glyph id"（彩色字形会展开成多层），
-        // 避免每字形每帧一次 Vec 分配 —— 稳态下这块容量一次分配后就不动了。
-        let mut glyph_scratch: Vec<u32> = Vec::new();
         for line in &shaped.lines {
             for g in &line.glyphs {
-                glyph_scratch.clear();
-                // 彩色字形：每层是字体里的普通 glyph id，按自己的 key 入图集。
-                // 先复制 id 再借用 source：后面 `rasterize_in` 需要 `&mut source`。
-                if let Some(layers) = self.source.color_layers_in(g.font_id, g.glyph_id) {
-                    glyph_scratch.extend(layers.iter().map(|l| l.glyph_id));
-                } else {
-                    glyph_scratch.push(g.glyph_id);
-                }
-                for &gid in &glyph_scratch {
-                    ensure_glyph(&mut self.atlas, &mut self.source, g.font_id, gid, px);
-                }
+                // COLR 字形在 `rasterize` 里已把整张 paint graph 合成进**基字形**的
+                // RGBA 图集条目，这里只需入基字形；不再按层展开。
+                ensure_glyph(&mut self.atlas, &mut self.source, g.font_id, g.glyph_id, px);
             }
         }
 
@@ -800,13 +789,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                         kind: crate::render::quad::kind::GLYPH,
                     });
                 };
-                if let Some(layers) = self.source.color_layers_in(g.font_id, g.glyph_id) {
-                    for l in layers {
-                        emit(l.glyph_id, Some(l.color), true, l.transform, l.clip);
-                    }
-                } else {
-                    emit(g.glyph_id, None, g.color_glyph, None, None);
-                }
+                emit(g.glyph_id, None, g.color_glyph, None, None);
             }
         }
 

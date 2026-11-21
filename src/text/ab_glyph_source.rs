@@ -160,6 +160,87 @@ impl AbGlyphSource {
         PxScale::from(px_em.max(1.0) * line / upem)
     }
 
+    /// 只取字形覆盖率（不生成 MSDF），供 COLR paint graph 的层合成用。
+    fn coverage_for(&mut self, glyph_id: u32, px_size: u32) -> Option<(u32, u32, Vec<u8>, Point)> {
+        let px = px_size.max(SDF_BASE_PX) as f32;
+        let id = GlyphId(glyph_id.min(u16::MAX as u32) as u16);
+        let scale = self.px_scale(px);
+        let scaled = self.font.as_scaled(scale);
+        let outlined = scaled.outline_glyph(id.with_scale(scale))?;
+        let bounds = outlined.px_bounds();
+        let (w, h) = (bounds.width() as u32, bounds.height() as u32);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let mut coverage = vec![0u8; (w * h) as usize];
+        outlined.draw(|x, y, alpha| {
+            let (ax, ay) = (x as usize, y as usize);
+            if ax >= w as usize || ay >= h as usize {
+                return;
+            }
+            coverage[ay * w as usize + ax] = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+        });
+        Some((w, h, coverage, Point::new(bounds.min.x.floor(), bounds.min.y.floor())))
+    }
+
+    /// COLR paint graph 精确合成：渐变、变换、裁剪、层混合全部在栅格化时求值，
+    /// 产出一张直出 RGBA 位图，shader 只需 mode 5 采样，无任何近似回退。
+    fn raster_color_graph(&mut self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster> {
+        use crate::text::color_raster::compose_color_layers;
+        let layers = self.color_layers(glyph_id)?;
+        let px = px_size.max(SDF_BASE_PX);
+        let upem = self.units_per_em();
+        let scale = px as f32 / upem.max(1.0);
+        let face = rustybuzz::ttf_parser::Face::parse(self.font.as_slice(), 0).ok()?;
+        let bbox = face.glyph_bounding_box(rustybuzz::ttf_parser::GlyphId(
+            glyph_id.min(u16::MAX as u32) as u16,
+        ))?;
+        let (xmin, ymin, xmax, ymax) = (
+            bbox.x_min as f32,
+            bbox.y_min as f32,
+            bbox.x_max as f32,
+            bbox.y_max as f32,
+        );
+        let out_rect = crate::core::Rect::new(
+            xmin * scale,
+            -ymax * scale,
+            (xmax - xmin) * scale,
+            (ymax - ymin) * scale,
+        );
+
+        // 覆盖率按层字形缓存（同一字形可能出现在多层）。
+        let mut cache: HashMap<u32, Option<(u32, u32, Vec<u8>, Point)>> = HashMap::new();
+        for layer in &layers {
+            if !cache.contains_key(&layer.glyph_id) {
+                let cov = self.coverage_for(layer.glyph_id, px);
+                cache.insert(layer.glyph_id, cov);
+            }
+        }
+        let cov_map: HashMap<u32, (u32, u32, Vec<u8>, Point)> = cache
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|v| (k, v)))
+            .collect();
+
+        let (w, h, rgba) = compose_color_layers(
+            &layers,
+            out_rect,
+            px,
+            upem,
+            SDF_PADDING,
+            |gid, _px| cov_map.get(&gid).cloned(),
+        )?;
+        Some(AtlasRaster {
+            offset: Point::new(out_rect.x, out_rect.y),
+            // compose 返回的 w/h 已含留白；AtlasRaster 的 width/height 只记墨迹。
+            width: w - 2 * SDF_PADDING,
+            height: h - 2 * SDF_PADDING,
+            sdf: rgba,
+            spread: SDF_SPREAD,
+            base_px: px as f32,
+            is_bitmap: true,
+        })
+    }
+
     /// CBDT/CBLC（或 sbix/EBDT）内嵌位图 → 带留白的 RGBA 图集条目。
     fn raster_bitmap(&self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster> {
         use rustybuzz::ttf_parser::RasterImageFormat;
@@ -323,7 +404,7 @@ impl AbGlyphSource {
                 advance: pos.x_advance as f32 * scale,
                 // HarfBuzz 的 y 向上为正；核心坐标系 y 向下，所以取负。
                 offset: Point::new(pos.x_offset as f32 * scale, -(pos.y_offset as f32) * scale),
-                color_glyph: false,
+                color_glyph: self.color_layers(id).is_some(),
                 embolden: 0.0,
             });
         }
@@ -572,6 +653,10 @@ impl GlyphSource for AbGlyphSource {
         // 而不是栅格化轮廓 —— 那会丢失颜色。
         if let Some(bitmap) = self.raster_bitmap(glyph_id, px_size) {
             return Some(bitmap);
+        }
+        // COLR v0/v1：整张 paint graph 精确合成为 RGBA。
+        if let Some(graph) = self.raster_color_graph(glyph_id, px_size) {
+            return Some(graph);
         }
         // `px_size` 是排版端按显示字号选好的 SDF 基准档位（64/128/256）。
         // 大字号用高档位，避免单通道 SDF 过度放大导致笔画变钝、圆角被抹平。
