@@ -185,12 +185,12 @@ pub trait GlyphSource {
     /// 彩色字形（COLR v0）的分层；普通字形返回 `None`。
     ///
     /// 返回借用切片，避免每帧克隆；字体来源应在构造时解析并缓存这张表。
-    fn color_layers(&self, _glyph_id: u32) -> Option<&[crate::text::ColorLayer]> {
+    fn color_layers(&self, _glyph_id: u32) -> Option<Vec<crate::text::ColorLayer>> {
         None
     }
 
     /// 指定字体下的彩色分层。默认忽略 `font_id`。
-    fn color_layers_in(&self, font_id: u32, glyph_id: u32) -> Option<&[crate::text::ColorLayer]> {
+    fn color_layers_in(&self, font_id: u32, glyph_id: u32) -> Option<Vec<crate::text::ColorLayer>> {
         let _ = font_id;
         self.color_layers(glyph_id)
     }

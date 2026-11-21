@@ -250,7 +250,7 @@ impl GlyphSource for FontSet {
         }
     }
 
-    fn color_layers_in(&self, font_id: u32, glyph_id: u32) -> Option<&[super::ColorLayer]> {
+    fn color_layers_in(&self, font_id: u32, glyph_id: u32) -> Option<Vec<super::ColorLayer>> {
         self.fonts
             .iter()
             .find(|s| s.source.font_id() == font_id)?

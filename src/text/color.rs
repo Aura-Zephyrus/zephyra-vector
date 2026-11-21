@@ -11,7 +11,6 @@
 //! 渐变取第一个色标作为该层的近似颜色（MSDF 只支持纯色 quad，无法逐像素渐变）。
 //! 这样至少保证彩色 emoji 不再退化成黑白，且零新增依赖。
 
-use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use rustybuzz::ttf_parser::colr::{ClipBox, CompositeMode, Paint, Painter};
@@ -89,61 +88,26 @@ impl<'a> Painter<'a> for LayerPainter<'a> {
     fn pop_transform(&mut self) {}
 }
 
-fn u16at(data: &[u8], off: usize) -> Option<u16> {
-    Some(u16::from_be_bytes(data.get(off..off + 2)?.try_into().ok()?))
-}
-
-/// 从 COLR 表头读出所有定义了彩色涂层的 glyph id。
+/// 按需解析**单个** glyph 的 COLR 分层（v0 与 v1）。
 ///
-/// v0 与 v1 的 baseglyph 记录都是 6 字节、首 2 字节为 glyph id，只是记录数量
-/// 字段宽度不同（v0 = u16，v1 = u32）。
-fn colored_glyph_ids(colr: &[u8]) -> Vec<u32> {
-    let Some(version) = u16at(colr, 0) else {
-        return Vec::new();
-    };
-    let read_u32 = |off: usize| -> Option<u32> {
-        Some(u32::from_be_bytes(colr.get(off..off + 4)?.try_into().ok()?))
-    };
-    let (count, records_offset) = match version {
-        0 => (
-            u16at(colr, 2).unwrap_or(0) as usize,
-            read_u32(4).unwrap_or(0) as usize,
-        ),
-        1 => (read_u32(2).unwrap_or(0) as usize, read_u32(6).unwrap_or(0) as usize),
-        _ => return Vec::new(),
-    };
-    let mut out = Vec::with_capacity(count);
-    for i in 0..count {
-        let off = records_offset + i * 6;
-        if let Some(gid) = u16at(colr, off) {
-            out.push(gid as u32);
-        }
+/// 不能像早期版本那样在字体加载时把整张 COLR 表 3487 个 glyph 全跑一遍 ——
+/// Segoe UI Emoji 的 paint graph 很深，实测会让启动卡住几十秒。这里只解析
+/// 真正被排版到的字形，结果由 `AbGlyphSource` 缓存。
+pub fn parse_color_glyph(font_bytes: &[u8], glyph_id: u32) -> Option<Vec<ColorLayer>> {
+    let face = Face::parse(font_bytes, 0).ok()?;
+    if face.raw_face().table(Tag::from_bytes(b"COLR")).is_none() {
+        return None;
     }
-    out
-}
-
-/// 解析字体里的 COLR 彩色字形表（v0 与 v1）。无相关表或表损坏时返回空表。
-pub fn parse_color_layers(font_bytes: &[u8]) -> HashMap<u32, Vec<ColorLayer>> {
-    let mut out = HashMap::new();
-    let Ok(face) = Face::parse(font_bytes, 0) else {
-        return out;
+    let mut painter = LayerPainter {
+        layers: Vec::new(),
+        pending_glyph: None,
+        _lt: PhantomData,
     };
-    let Some(colr) = face.raw_face().table(Tag::from_bytes(b"COLR")) else {
-        return out;
-    };
-    for gid in colored_glyph_ids(colr) {
-        let mut painter = LayerPainter {
-            layers: Vec::new(),
-            pending_glyph: None,
-            _lt: PhantomData,
-        };
-        if face
-            .paint_color_glyph(GlyphId(gid as u16), 0, RgbaColor::new(255, 255, 255, 255), &mut painter)
-            .is_some()
-            && !painter.layers.is_empty()
-        {
-            out.insert(gid, painter.layers);
-        }
-    }
-    out
+    face.paint_color_glyph(
+        GlyphId(glyph_id as u16),
+        0,
+        RgbaColor::new(255, 255, 255, 255),
+        &mut painter,
+    )?;
+    (!painter.layers.is_empty()).then_some(painter.layers)
 }

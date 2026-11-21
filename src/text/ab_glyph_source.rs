@@ -53,10 +53,11 @@
 //! `floor(offset.y)` 就是 cap 高度（32px 的 'H' 约 22），于是每个像素都被越界判断
 //! 跳过 —— **图集全空，屏幕上字完全不出现**。见 `zephyra/src/text/atlas.rs` 里的修正，
 //! 以及 `zephyra/src/text/atlas_tests.rs` 里用假字形来源钉死的契约测试。
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::core::Point;
-use crate::text::color::parse_color_layers;
+use crate::text::color::parse_color_glyph;
 use crate::text::msdf::outline_segments;
 use crate::text::png::decode_png;
 use crate::text::sdf::{SDF_BASE_PX, SDF_PADDING, SDF_SPREAD};
@@ -83,8 +84,9 @@ fn feature_tag(name: &str) -> u32 {
 pub struct AbGlyphSource {
     font: FontVec,
     font_id: u32,
-    /// COLR v0 彩色字形分层表，构造时解析一次（新字形才查询，稳态零成本）。
-    color_layers: HashMap<u32, Vec<ColorLayer>>,
+    /// COLR 彩色分层的按需缓存。Segoe UI Emoji 的 v1 paint graph 全量解析
+    /// 有 3487 个 glyph，构造时全跑会卡住启动；只在实际排版到某个字形时解析。
+    color_cache: RefCell<HashMap<u32, Vec<ColorLayer>>>,
     /// 当前生效的可变字体轴；用来做幂等跳过与回退默认轴。
     applied_variations: Vec<([u8; 4], f32)>,
 }
@@ -99,11 +101,10 @@ impl AbGlyphSource {
     pub fn from_bytes(font_id: u32, bytes: &[u8]) -> Result<Self, String> {
         let font = FontVec::try_from_vec(bytes.to_vec())
             .map_err(|e| format!("字体解析失败（可能是 CFF/可变字体或文件已损坏）: {e}"))?;
-        let color_layers = parse_color_layers(bytes);
         Ok(Self {
             font,
             font_id,
-            color_layers,
+            color_cache: RefCell::new(HashMap::new()),
             applied_variations: Vec::new(),
         })
     }
@@ -398,7 +399,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
                 TextStack::disabled(AbGlyphSource {
                     font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
                     font_id: u32::MAX,
-                    color_layers: HashMap::new(),
+                    color_cache: RefCell::new(HashMap::new()),
                     applied_variations: Vec::new(),
                 }),
                 format!("字体 {path} 解析失败（{e}），已退回无文本模式"),
@@ -408,7 +409,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
             TextStack::disabled(AbGlyphSource {
                 font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
                 font_id: u32::MAX,
-                color_layers: HashMap::new(),
+                color_cache: RefCell::new(HashMap::new()),
                 applied_variations: Vec::new(),
             }),
             format!("字体 {path} 是空文件，已退回无文本模式"),
@@ -417,7 +418,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
             TextStack::disabled(AbGlyphSource {
                 font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
                 font_id: u32::MAX,
-                color_layers: HashMap::new(),
+                color_cache: RefCell::new(HashMap::new()),
                 applied_variations: Vec::new(),
             }),
             format!("读不到字体 {path}（{e}），已退回无文本模式"),
@@ -465,7 +466,7 @@ pub fn from_system_font() -> (TextStack<AbGlyphSource>, String) {
             // 占位字体：`font_id` 任意，因为 disabled 模式不产出任何字形。
             font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
             font_id: u32::MAX,
-            color_layers: HashMap::new(),
+            color_cache: RefCell::new(HashMap::new()),
             applied_variations: Vec::new(),
         }),
         format!(
@@ -524,8 +525,14 @@ impl GlyphSource for AbGlyphSource {
         self.applied_variations = variations.to_vec();
     }
 
-    fn color_layers(&self, glyph_id: u32) -> Option<&[ColorLayer]> {
-        self.color_layers.get(&glyph_id).map(|v| v.as_slice())
+    fn color_layers(&self, glyph_id: u32) -> Option<Vec<ColorLayer>> {
+        if let Some(cached) = self.color_cache.borrow().get(&glyph_id) {
+            return (!cached.is_empty()).then(|| cached.clone());
+        }
+        let layers = parse_color_glyph(self.font.as_slice(), glyph_id).unwrap_or_default();
+        let result = (!layers.is_empty()).then(|| layers.clone());
+        self.color_cache.borrow_mut().insert(glyph_id, layers);
+        result
     }
 
     fn metrics(&self, px_size: f32) -> Option<FontMetrics> {
