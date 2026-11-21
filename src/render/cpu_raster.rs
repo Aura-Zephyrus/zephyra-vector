@@ -290,7 +290,7 @@ impl CpuCanvas {
                 // `half_size` 标了 `nointerpolation`，四个顶点填同一个值，直接取第一个。
                 let half_size = a.half_size;
                 // `color` / `kind` 是逐四边形恒定的，取第一个顶点即可。
-                let color = a.color;
+                let mut color = a.color;
                 let mut coverage = match a.kind {
                     k if (k - kind::GLYPH).abs() < 0.01 => {
                         // `shape` 在字形分支里是采样模式码（矩形分支仍当角形状参数）。
@@ -306,7 +306,7 @@ impl CpuCanvas {
                         } else if mode < 2.5 {
                             let [r, g, b] = atlas.map(|at| at.sample_msdf(uv)).unwrap_or([0.0; 3]);
                             smoothstep(0.5 - half - emb, 0.5 + half - emb, median3(r, g, b))
-                        } else {
+                        } else if mode < 4.5 {
                             // LCD：与 GPU 同一套 Skia 12-tap FIR。CPU 参考路径
                             // 没有逐通道 alpha，三通道覆盖率按感知权重折成标量。
                             let duv = (chunk[2].uv[0] - a.uv[0]) / w.max(1.0);
@@ -327,6 +327,13 @@ impl CpuCanvas {
                                 cb += FIR_B[k] / 256.0 * c;
                             }
                             cr.min(1.0) * 0.30 + cg.min(1.0) * 0.59 + cb.min(1.0) * 0.11
+                        } else {
+                            // CBDT / 精确合成后的 COLR：图集里是直出 RGBA，
+                            // 颜色来自纹素（不是文字色），alpha 即覆盖率。
+                            let [r, g, b, a] =
+                                atlas.map(|at| at.sample_rgba(uv)).unwrap_or([0.0; 4]);
+                            color = [r, g, b, 1.0];
+                            a
                         }
                     }
                     // 图像：**只画形状，不采样纹理。**
@@ -415,6 +422,26 @@ impl AtlasBitmap {
             self.pixels[i] as f32 / 255.0,
             self.pixels[i + 1] as f32 / 255.0,
             self.pixels[i + 2] as f32 / 255.0,
+        ]
+    }
+
+    /// 按 uv 取 RGBA（CBDT / COLR 精确合成位图）。
+    pub fn sample_rgba(&self, uv: [f32; 2]) -> [f32; 4] {
+        if uv[0] < 0.0 || uv[1] < 0.0 || uv[0] >= 1.0 || uv[1] >= 1.0 {
+            return [0.0; 4];
+        }
+        let s = self.size as usize;
+        let x = (uv[0] * s as f32) as usize;
+        let y = (uv[1] * s as f32) as usize;
+        if x >= s || y >= s {
+            return [0.0; 4];
+        }
+        let i = (y * s + x) * 4;
+        [
+            self.pixels[i] as f32 / 255.0,
+            self.pixels[i + 1] as f32 / 255.0,
+            self.pixels[i + 2] as f32 / 255.0,
+            self.pixels[i + 3] as f32 / 255.0,
         ]
     }
 
