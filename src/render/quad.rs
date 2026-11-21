@@ -711,21 +711,20 @@ pub struct RenderReport {
     /// 没能画出来的命令数（几何退化、顶点全被裁掉等）。
     ///
     /// ⚠ 稳态下应为 0。要区分「没人用效果」与「效果被静默忽略」，看的是
-    /// [`Self::unimplemented_filters`] 与 [`Self::unimplemented_blends`] —— 那两个
-    /// 恒为正是当前的常态，而本字段恒为 0 才是正常帧的样子。
+    /// [`Self::unimplemented_filters`] 与 [`Self::unimplemented_blends`]。
+    /// 这两个计数在 D3D11/D3D12 后端会被递减归零（PS 变体已全部接上），
+    /// 在 Vulkan/WGSL 后端仍可能非零（14 个混合模式回退 SrcOver）。
     pub skipped: usize,
-    /// 因带非恒等 `filter` 而**未执行**的命令数。
+    /// 因带非恒等 `filter` 而**未执行**的命令数（进度/诊断计数）。
     ///
-    /// 恒大于 0 说明有人设了效果但 GPU 侧还没接离屏pass —— 画面上表现为
-    /// "效果静默消失"（没有任何报错），所以这个计数是唯一的诊断手段。
-    ///
-    /// 那条命令**本身照常画**（本层只负责展开几何，效果是后端的事），
-    /// 但离屏 pass 要等 GPU 侧实现后才存在 —— 届时这里应恒为 0。
+    /// 几何展开层只数「还没接上离屏 pass」的命令；真正的后端在自己的
+    /// `RenderReport` 上把已实现的部分减掉。因此从 [`expand`] 直接拿到的
+    /// 报告里它可能非零，而 D3D 后端最终报告里应为 0。
     pub unimplemented_filters: usize,
-    /// 因带非默认 `blend` 而**未执行**的命令数。
+    /// 因带非默认 `blend` 而**未执行**的命令数（进度/诊断计数）。
     ///
-    /// 与 [`Self::unimplemented_filters`] 同理：混合模式要由后端换混合状态，
-    /// 几何展开层看不到它。
+    /// 与 [`Self::unimplemented_filters`] 同理：混合模式要由后端换混合状态或
+    /// PS 变体，几何展开层看不到它。D3D 后端已全部接上，Vulkan 仍有回退。
     pub unimplemented_blends: usize,
     ///
     /// # 它数的是"**还差多少**"，不是"有几个非默认模式"
@@ -1749,49 +1748,59 @@ pub fn expand_range_translated_into(
                     // uv 必须**按比例**跟着裁：纹理映射在两轴上都是线性的
                     // （见 [`Vertex::quad`]），所以比例裁剪是精确的；只缩几何不缩 uv
                     // ⇒ 纹理被拉伸 ⇒ 字形变形。
-                    let (rect, uv) = match clip {
-                        None => (rect, g.uv),
-                        Some(c) => {
-                            let cut = intersect(rect, c);
-                            if cut.width <= 0.0 || cut.height <= 0.0 {
-                                continue;
-                            }
-                            // `rect.width` / `rect.height` 已由上面的零尺寸判据保证 > 0。
-                            let sx = (cut.x - rect.x) / rect.width;
-                            let sy = (cut.y - rect.y) / rect.height;
-                            (
-                                cut,
-                                UvRect::new(
-                                    g.uv.x + g.uv.width * sx,
-                                    g.uv.y + g.uv.height * sy,
-                                    g.uv.width * (cut.width / rect.width),
-                                    g.uv.height * (cut.height / rect.height),
-                                ),
-                            )
-                        }
-                    };
+                    // 先应用宿主裁剪栈，再叠加 COLR v1 paint graph 自带的 clip box。
+                    let mut cut = rect;
+                    if let Some(c) = clip {
+                        cut = intersect(cut, c);
+                    }
+                    if let Some(c) = g.clip {
+                        cut = intersect(cut, c);
+                    }
+                    if cut.width <= 0.0 || cut.height <= 0.0 {
+                        continue;
+                    }
+                    // uv 必须按裁剪比例同步收缩（纹理映射两轴线性）。
+                    let sx = (cut.x - rect.x) / rect.width;
+                    let sy = (cut.y - rect.y) / rect.height;
+                    let rect = cut;
+                    let uv = UvRect::new(
+                        g.uv.x + g.uv.width * sx,
+                        g.uv.y + g.uv.height * sy,
+                        g.uv.width * (rect.width / g.dst.width),
+                        g.uv.height * (rect.height / g.dst.height),
+                    );
                     // 逐字形颜色覆盖（文字阴影的副本用它拿独立颜色/透明度）；
                     // None 时沿用 Command::Text 的唯一文字色。
                     let rgba = g
                         .color
                         .map_or(default_rgba, |c| [c.r, c.g, c.b, c.a]);
                     if (g.kind - kind::GLYPH).abs() < 0.01 {
-                        if g.rotation != 0.0 {
-                            // 旋转字形：四个角绕自身中心转。裁剪仍按未旋转矩形做，
-                            // 因此旋转后的尖角可能略微越过裁剪框（圆弧文字很小众，
-                            // 这里接受该近似，换取零后端改动）。
+                        if g.rotation != 0.0 || g.transform.is_some() {
+                            // 旋转/COLR 变换字形：先按字形中心旋转，再施加 paint graph 仿射。
+                            // 裁剪已按未变换矩形做了 uv 同步收缩；变换后的尖角可能略越过
+                            // 裁剪框（小字形上可接受，换取零后端改动）。
                             let (cx, cy) = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
                             let (s, c) = g.rotation.sin_cos();
-                            let rotate = |x: f32, y: f32| {
-                                let dx = x - cx;
-                                let dy = y - cy;
+                            let rotate = |p: Point| {
+                                let dx = p.x - cx;
+                                let dy = p.y - cy;
                                 Point::new(cx + dx * c - dy * s, cy + dx * s + dy * c)
                             };
+                            let transform = |p: Point| match g.transform {
+                                Some([a, b, cc, d, e, f]) => Point::new(
+                                    a * p.x + cc * p.y + e,
+                                    b * p.x + d * p.y + f,
+                                ),
+                                None => p,
+                            };
                             let corners = [
-                                rotate(rect.x, rect.y),
-                                rotate(rect.x + rect.width, rect.y),
-                                rotate(rect.x + rect.width, rect.y + rect.height),
-                                rotate(rect.x, rect.y + rect.height),
+                                transform(rotate(Point::new(rect.x, rect.y))),
+                                transform(rotate(Point::new(rect.x + rect.width, rect.y))),
+                                transform(rotate(Point::new(
+                                    rect.x + rect.width,
+                                    rect.y + rect.height,
+                                ))),
+                                transform(rotate(Point::new(rect.x, rect.y + rect.height))),
                             ];
                             out.solid.extend_from_slice(&Vertex::from_glyph_corners(
                                 corners,
@@ -2023,8 +2032,10 @@ pub fn shift_rect(r: Rect, t: Point) -> Rect {
 ///
 /// 判据是 [`as_coeff`](crate::filter::BlendMode::as_coeff)：能用系数对表达的
 /// 那 15 个（`Clear`..`Screen`）可以直接映射成 `D3D11_BLEND_*` / `D3D12_BLEND_*`，
-/// 不需要片元着色器配合。再往后的 14 个（11 个可分离 + 4 个非可分离）需要 PS 变体
-/// 或 `SetLum` / `SetSat`。
+/// 不需要片元着色器配合。再往后的 14 个（10 个可分离 + 4 个非可分离）需要 PS 变体
+/// 或 `SetLum` / `SetSat`。这些 PS 变体已全部编译进 `zephyra_fx::shaders`，
+/// D3D11/D3D12 已接上；本函数只是给 [`RenderReport::unimplemented_blends`]
+/// 提供「还差多少」的进度计数，Vulkan/WGSL 仍会计数（回退 SrcOver）。
 ///
 /// # 为什么判据从"非默认"改成这个
 ///

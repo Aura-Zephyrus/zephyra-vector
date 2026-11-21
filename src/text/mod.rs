@@ -44,13 +44,16 @@
 //!
 //! # 已知限制
 //!
-//! - **可变字体轴尚未生效**：字体回退链（`FontSet`）已能按覆盖范围与 family/weight
-//!   在多份字体间选字，字重无匹配时用伪粗体合成；但可变字体的连续轴不在此范围内。
-//! - **彩色字形未光栅化**：emoji 的 ZWJ 序列在整形层能合成 cluster，但
-//!   `AbGlyphSource` 只栅格化 `glyf` 轮廓，COLR/CBDT 尚未接入。
-//! - **LCD 子像素混合采用逐通道覆盖率**：shader 把 RGB 三通道各自的覆盖率直接乘进
-//!   源颜色，alpha 取三通道最大值供 `SrcOver` 决定背景让位；它仍不是 GPU 双源混合
-//!   那种逐通道 dst 系数，但三个子像素颜色各自独立。`TextStyle::lcd` 默认关闭。
+//! - **可变字体轴**：`TextStyle::variations` 通过 `ab_glyph::VariableFont` 设置 fvar 轴，
+//!   ttf-parser 在提取 `glyf` 轮廓时自动应用 gvar；但轴的变化只影响轮廓/步进，
+//!   不做逐帧插值的动画（样式变化时重新栅格化该字形）。
+//! - **彩色字形**：COLR v0/v1 与 CBDT/CBLC 都已接入（`text::color` + 自写 PNG 解码）；
+//!   COLR v1 的渐变以第一个不透明色标近似为纯色，clip / composite / transform
+//!    paint graph 节点目前被忽略。`TextStyle::lcd` 默认关闭。
+//! - **LCD 子像素混合**：shader 用 Skia 12-tap FIR 生成 R/G/B 各自覆盖率，并做
+//!   亮度感知的 sRGB 覆盖校正；alpha 取三通道最大值（Skia 会按 src/dst alpha
+//!   选 min 或 max，当前单 pass 拿不到 dst alpha，故固定取 max）。它仍不是 GPU
+//!   双源混合那种逐通道 dst 系数，但三个子像素颜色各自独立。
 //! - `GlyphSource::advance` 仍是单字符接口（用于光标定位等场景）；完整排版请走
 //!   [`GlyphSource::shape`] 与 [`crate::text::TextEngine::shape`]。
 
@@ -830,6 +833,8 @@ pub fn quads_from_shaped(
                 mask: GlyphMask::Coverage,
                 rotation: 0.0,
                 color: None,
+                transform: None,
+                clip: None,
                 kind: crate::render::quad::kind::GLYPH,
             });
         }

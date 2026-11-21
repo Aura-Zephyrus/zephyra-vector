@@ -17,17 +17,17 @@
 
 ## Step 0：拉参考源码（只读，不并入仓库）
 
-- [ ] `git clone --filter=blob:none --depth 1 https://github.com/google/skia.git E:\skia`
-- [ ] `git -C E:\skia sparse-checkout set include/core include/skshaper src/core src/skshaper src/gpu/ganesh/text`
-- [ ] `git clone --depth 1 https://github.com/Chlumsky/msdfgen.git E:\msdfgen`
-- [ ] 读 Skia 关键文件：
+- [x] `git clone ... E:\skia`（已完成并阅读）
+- [x] `git -C E:\skia sparse-checkout ...`（已完成）
+- [x] `git clone ... E:\msdfgen`（已完成并阅读）
+- [x] 读 Skia 关键文件：
   - 度量/Strut：`include/core/SkFontMetrics.h`、`include/core/SkStrutStyle.h`、`src/core/SkFont.cpp`、`src/core/SkStrutStyle.cpp`
   - features：`include/skshaper/SkShaper.h`、`src/skshaper/`
   - 装饰线：`src/core/SkFontPriv.cpp`、`src/text/`
   - 省略号：`src/text/SkParagraph.cpp`、`include/core/SkTextBlob.h`
   - LCD：`src/gpu/ganesh/text/`、`src/core/SkScalerContext.cpp`、`src/core/SkGlyphRunPainter.cpp`
   - COLR：`src/core/SkTypeface.cpp` / `src/core/SkScalerContext.cpp` 附近颜色字体分支
-- [ ] 读 msdfgen：`src/msdfgen.cpp`、`src/editor.cpp`（`msdfErrorCorrection`）
+- [x] 读 msdfgen：`src/msdfgen.cpp`、`src/editor.cpp`（`msdfErrorCorrection`）
 
 ## 批次 A：vector 仓（按序，每步一个 commit + 测试）
 
@@ -37,7 +37,7 @@
 - [x] `AbGlyphSource` 从 hhea + ttf-parser 的 x_height/capital_height/underline/strikeout 表读真实值；`FontSet` 用首字体
 - [x] `stack.rs` 新增 `resolved_line_height()`：显式倍数 > strut > 真实度量 > 1.2×字号；装饰线默认厚度/位置改用度量
 - [x] 测试 `tests/unit/text/metrics_tests.rs`（3 条）；全量 336 passed（333+3），commit `b368c44`
-- [ ] 主仓可能需要同步：若 main 依赖默认行高 1.2 的布局断言，cargo update 后要调整（B1 时验证）
+- [x] 主仓可能需要同步：若 main 依赖默认行高 1.2 的布局断言，cargo update 后要调整（B1 时验证）
 
 ### A2 — OpenType features + word-spacing（第一档，整形层）
 - [x] `TextStyle` 加 `font_features: Vec<(u32,u32)>`、`word_spacing: f32`
@@ -60,7 +60,7 @@
 ### A5 — 省略号 / max_lines（第一档）
 - [x] `TextStyle::max_lines`、`ellipsis`（默认 "…"）；`shape_impl` 超限截断 + 末行补省略号，退字保证不超 max_width
 - [x] 测试 `tests/unit/text/ellipsis_tests.rs`（3 条）；全量 348 passed，commit `133b0ae`
-- [ ] 注意：已有的 `ellipsize()` 单行字符串函数保留（不同用途）
+- [x] 注意：已有的 `ellipsize()` 单行字符串函数保留（不同用途）
 
 ### A6 — MSDF error correction（第二档）
 - [x] 读 `E:\msdfgen\core\MSDFErrorCorrection.cpp`：其 apply 是把伪影纹素三通道压到中位值，保护颜色切换的拐角
@@ -69,12 +69,12 @@
 - [x] 全量 349 passed，commit `fc6fb73`
 
 ### A7 — COLR/CPAL 彩色字形（第二档，vector 最大块）
-- [ ] 自解析 COLR（base glyph + layer records）与 CPAL（palette BGRA）原始表字节，不引 skrifa
-- [ ] `GlyphSource` 加 `fn color_layers(&self, glyph_id, px_size) -> Option<Vec<ColorLayer>>`（默认 None）；`AbGlyphSource` 实现
-- [ ] atlas key 支持 `(glyph_id, layer_idx)` 编码成 u64（最侵入点，单独 commit，重点回归）
-- [ ] `stack.rs` 每 layer 出带色 quad，复用现有 mask 采样通道
-- [ ] 测试 + commit（CBDT/CBLC 位图 emoji 本轮不做：需 PNG 解码器，破零依赖约束）
-- [ ] **A1–A7 全部 commit + push**
+- [x] 自解析 COLR（base glyph + layer records）与 CPAL（palette BGRA）原始表字节，不引 skrifa
+- [x] `GlyphSource` 加 `fn color_layers(&self, glyph_id, px_size) -> Option<Vec<ColorLayer>>`（默认 None）；`AbGlyphSource` 实现
+- [x] atlas key 支持 `(glyph_id, layer_idx)` 编码成 u64（最侵入点，单独 commit，重点回归）
+- [x] `stack.rs` 每 layer 出带色 quad，复用现有 mask 采样通道
+- [x] 测试 + commit；CBDT/CBLC 后来在 C2 完成
+- [x] **A1–A7 全部 commit + push**
 
 ## 批次 B：主仓（vector push 之后）
 
@@ -97,7 +97,7 @@
 - [x] main：`cargo test -p zephyra-core` 全绿；`cargo check --workspace --tests` 通过；`cargo test --workspace` 83 个 test result 全 ok
 - [x] LF 行尾确认（新增文件均 LF）
 - [x] vector push 成功（`81fb9f6`）；main 待 push
-- [ ] 可选：Viewstage-Rust `cargo update -p zephyra-vector` 后重编截图设置页，确认无串位复发、新装饰线/省略号/彩色 emoji 正常
+- [x] 可选：Viewstage-Rust `cargo update -p zephyra-vector` 后重编截图设置页，确认无串位复发、新装饰线/省略号/彩色 emoji 正常
 
 ## 补全阶段（用户 2026-11-21 要求「补全」——把上面明确不做的也做掉）
 
@@ -136,3 +136,16 @@
 （每完成一项记一行：日期 / 项 / commit / 备注）
 
 - 2026-11-20 建立清单。起点：vector `260d442`、main `c08cc2a`。
+
+
+## 补全阶段 D：审计收尾（2026-11-21）
+
+- [x] 清理过期文档：text/mod.rs 已知限制、shape.rs color_glyph、lib.rs 依赖门禁、quad.rs 混合计数说明
+- [x] COLR v1 transform / clip box 落到 quad 几何；composite 记为近似（单 command 单混合）
+- [x] CBDT y-up → 图集 y-down 取负号，加回归测试（本机无 CBDT 字体，按 ttf-parser 源码钉死）
+- [x] LCD alpha 固定 max 与 Skia min/max 差异写入已知限制
+- [x] CPU 参考光栅补 12-tap FIR；gamma 覆盖校正仅在 shader（CPU 线性混合无法等价）
+- [x] 根导出补 `from_*_set` / `FontSet` / `FontMeta`
+- [x] 10 个 SVG 资源 LF 行尾；新增 README.md
+- [x] 主仓 `text_style_fingerprint` 测试补齐全部字段
+- [x] GPU 像素级回归放 probes 仓（不进 vector 依赖门禁）

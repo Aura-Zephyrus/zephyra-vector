@@ -11,7 +11,8 @@
 //! - [`shaders`]：顶点布局的对偶端 —— 着色器源与预编译字节码契约。
 //!
 //! 依赖方向严格单向：**使用方 → 本库**，本库不依赖任何 workspace 内的 crate。
-//! 门禁：`cargo tree -p zephyra-vector --depth 1` 只能出现 `ab_glyph` 与 `bytemuck`。
+//! 门禁：`cargo tree -p zephyra-vector --depth 1` 只能出现 `Cargo.toml` 声明的那 6 个
+//! 纯 Rust 依赖（ab_glyph、rustybuzz、bytemuck 与 unicode-* 四个），全部无系统库。
 
 pub mod core;
 pub mod decoration;
@@ -39,6 +40,7 @@ pub use render::texture::TextureNames;
 pub use text::ab_glyph_source::{
     from_font_file, from_system_font, AbGlyphSource, FONT_OVERRIDE_ENV,
 };
+pub use text::{from_font_file_set, from_system_font_set, FontMeta, FontSet};
 
 #[cfg(test)]
 #[path = "../tests/unit/geom_tests.rs"]

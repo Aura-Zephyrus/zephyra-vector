@@ -145,6 +145,8 @@ fn reused_path_byte_identical_to_one_shot_path() {
                 mask: crate::paint::GlyphMask::Coverage,
                 rotation: 0.0,
                 color: None,
+                transform: None,
+                clip: None,
                 kind: crate::render::quad::kind::GLYPH,
             }]
             .into(),
@@ -582,6 +584,8 @@ fn text_cmd(dst: Rect) -> Command {
             mask: crate::paint::GlyphMask::Coverage,
             rotation: 0.0,
             color: None,
+            transform: None,
+            clip: None,
             kind: crate::render::quad::kind::GLYPH,
         }]
         .into(),
@@ -1410,6 +1414,8 @@ fn translate_also_applies_to_glyphs() {
             mask: crate::paint::GlyphMask::Coverage,
             rotation: 0.0,
             color: None,
+            transform: None,
+            clip: None,
             kind: crate::render::quad::kind::GLYPH,
         }]
         .into(),

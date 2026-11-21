@@ -76,6 +76,11 @@ fn feature_tag(name: &str) -> u32 {
     u32::from_be_bytes(feature_tag_bytes(name))
 }
 
+/// ttf-parser 的 CBDT `image.y` 是 y-up 的上边界；图集要 y-down。
+fn bitmap_offset(x: i16, y: i16) -> Point {
+    Point::new(x as f32, -(y as f32))
+}
+
 /// 基于 ab_glyph 的字形来源。
 ///
 /// 只做三件事：查字形 id、算步进、栅格化。三者都是 `ab_glyph` 的直接映射 —— 这里
@@ -181,7 +186,8 @@ impl AbGlyphSource {
             }
         }
         Some(AtlasRaster {
-            offset: Point::new(image.x as f32, image.y as f32),
+            // 见 `bitmap_offset`：CBDT y-up 上边界要转成图集的 y-down 偏移。
+            offset: bitmap_offset(image.x, image.y),
             width: w,
             height: h,
             sdf,
@@ -692,3 +698,15 @@ impl GlyphSource for AbGlyphSource {
 #[cfg(test)]
 #[path = "../../tests/unit/render/text_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod bitmap_offset_tests {
+    use super::*;
+
+    #[test]
+    fn cbdt_y_up_becomes_atlas_y_down() {
+        let p = bitmap_offset(3, 12);
+        assert_eq!(p.x, 3.0);
+        assert_eq!(p.y, -12.0, "CBDT 上边界在基线之上 ⇒ 图集偏移应为负");
+    }
+}

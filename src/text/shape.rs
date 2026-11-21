@@ -27,7 +27,7 @@ pub struct ShapedGlyph {
     pub advance: f32,
     /// 相对基线的偏移（DIP，y 向下）。
     pub offset: Point,
-    /// 彩色字形（emoji）标记。光栅化尚未支持彩色表，仅作信息保留。
+    /// 彩色字形（emoji）标记：`TextStack` 据此把 COLR/CBDT 字形展开成多层带色 quad。
     pub color_glyph: bool,
     /// 伪粗体阈值偏移（SDF 值域）。多字体回退在请求字重无匹配字体时用它合成，
     /// 0 表示不合成。

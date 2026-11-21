@@ -100,6 +100,8 @@ fn push_decoration(
             mask: GlyphMask::Coverage,
             rotation: 0.0,
             color: None,
+            transform: None,
+            clip: None,
             kind: crate::render::quad::kind::RECT,
         });
     };
@@ -726,7 +728,11 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                 let baseline_x = origin.x + g.offset.x;
                 // 一个字形可能是彩色字形（COLR），那时它展开成多层 quad；
                 // 每层就是一个普通 glyph id + 调色板颜色。
-                let mut emit = |gid: u32, color: Option<Color>, color_glyph: bool| {
+                let mut emit = |gid: u32,
+                                color: Option<Color>,
+                                color_glyph: bool,
+                                colr_transform: Option<[f32; 6]>,
+                                colr_clip: Option<Rect>| {
                     let Some(entry) = self.atlas.get(g.font_id, gid, px) else {
                         // 淘汰掉了：多半是图集装不下这一帧的整个字符集。跳过而不是
                         // 整段放弃 —— 部分文本可见远好于整段消失。
@@ -779,15 +785,27 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                         },
                         rotation: g.rotation,
                         color,
+                        transform: colr_transform.map(|m| {
+                            // 平移量从字体单位换算到屏幕像素；旋转/缩放到布局本身已归一化。
+                            [m[0], m[1], m[2], m[3], m[4] * scale, m[5] * scale]
+                        }),
+                        clip: colr_clip.map(|c| {
+                            Rect::new(
+                                baseline_x + c.x * scale,
+                                baseline_y + c.y * scale,
+                                c.width * scale,
+                                c.height * scale,
+                            )
+                        }),
                         kind: crate::render::quad::kind::GLYPH,
                     });
                 };
                 if let Some(layers) = self.source.color_layers_in(g.font_id, g.glyph_id) {
                     for l in layers {
-                        emit(l.glyph_id, Some(l.color), true);
+                        emit(l.glyph_id, Some(l.color), true, l.transform, l.clip);
                     }
                 } else {
-                    emit(g.glyph_id, None, g.color_glyph);
+                    emit(g.glyph_id, None, g.color_glyph, None, None);
                 }
             }
         }

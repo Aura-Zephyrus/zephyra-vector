@@ -481,6 +481,10 @@ pub struct GlyphQuad {
     /// 文字阴影用它给副本一个独立颜色；这比给 `Command::Text` 加"阴影色再画一遍"
     /// 更省一条命令，且阴影与正文天然共用同一张图集。
     pub color: Option<Color>,
+    /// COLR v1 paint graph 的仿射变换 `[a,b,c,d,e,f]`（已换算到屏幕像素）。
+    pub transform: Option<[f32; 6]>,
+    /// COLR v1 paint graph 的裁剪盒（屏幕像素）。
+    pub clip: Option<Rect>,
     /// 顶点类型。字形走 `GLYPH`；装饰线走 `RECT`（纯色 SDF，不采纹理）。
     ///
     /// 默认常量见 [`crate::render::quad::kind::GLYPH`]，直接写 1.0 是为了
