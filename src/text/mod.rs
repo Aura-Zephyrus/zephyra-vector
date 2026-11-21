@@ -69,7 +69,7 @@ pub mod stack;
 
 pub use crate::paint::LcdOrder;
 pub use ab_glyph_source::{from_font_file, from_system_font, AbGlyphSource, FONT_OVERRIDE_ENV};
-pub use fontset::{FontMeta, FontSet};
+pub use fontset::{from_font_file_set, from_system_font_set, FontMeta, FontSet};
 pub use sdf::{sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD, SDF_TIERS};
 pub use shape::{
     bidi_runs, hyphenation_opportunities, line_break_opportunities, ShapedGlyph, ShapedRun,
@@ -116,6 +116,9 @@ mod path_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/text/bitmap_tests.rs"]
 mod bitmap_tests;
+#[cfg(test)]
+#[path = "../../tests/unit/text/fontset_stack_tests.rs"]
+mod fontset_stack_tests;
 
 pub use atlas::{
     AtlasGlyph, AtlasRaster, AtlasStats, EntryInfo, EvictPlan, EvictionPolicy, GlyphAtlas,

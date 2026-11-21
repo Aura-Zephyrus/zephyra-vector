@@ -7,7 +7,7 @@ use crate::text::{AbGlyphSource, GlyphSource, SDF_PADDING};
 /// 用未压缩的 DEFLATE stored block 造一张 2×2 RGBA PNG（测 decoder 本身）。
 fn tiny_png() -> Vec<u8> {
     let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
-    let mut chunk = |tag: &[u8; 4], body: &[u8], out: &mut Vec<u8>| {
+    let chunk = |tag: &[u8; 4], body: &[u8], out: &mut Vec<u8>| {
         out.extend_from_slice(&(body.len() as u32).to_be_bytes());
         out.extend_from_slice(tag);
         out.extend_from_slice(body);

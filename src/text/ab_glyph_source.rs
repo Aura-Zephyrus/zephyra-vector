@@ -118,6 +118,14 @@ impl AbGlyphSource {
         self.font.variations()
     }
 
+    /// OS/2 字重类（400 = Regular），供回退链按 family/weight 选字体。
+    pub(crate) fn weight_class(&self) -> u16 {
+        let Ok(face) = rustybuzz::ttf_parser::Face::parse(self.font.as_slice(), 0) else {
+            return 400;
+        };
+        face.weight().to_number()
+    }
+
     /// 字体的 units-per-em（供回退链算 `px / upem` 缩放）。
     pub(crate) fn units_per_em(&self) -> f32 {
         self.font.units_per_em().unwrap_or(1000.0).max(1.0)
@@ -334,7 +342,7 @@ impl AbGlyphSource {
 /// 顺序不是「按显示效果排的」，只是「挑一个存在的字体」—— 曾经没人在意拉丁字体的
 /// 观感，于是中文坏掉也没人发现。要显示中文就设 [`FONT_OVERRIDE_ENV`]，
 /// 或把一份含 CJK 的字体挪到表首（代价：拉丁观感变）。
-const FONT_CANDIDATES: &[&str] = &[
+pub(crate) const FONT_CANDIDATES: &[&str] = &[
     // Windows
     "C:\\Windows\\Fonts\\segoeui.ttf",
     "C:\\Windows\\Fonts\\msyh.ttc", // 微软雅黑 —— 含 CJK

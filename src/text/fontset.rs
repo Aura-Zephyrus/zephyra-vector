@@ -26,7 +26,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::ab_glyph_source::AbGlyphSource;
 use super::shape::{bidi_runs, dominant_script, ShapedGlyph, ShapedRun};
-use super::{AtlasRaster, FontMetrics, GlyphSource, TextStyle};
+use super::{AtlasRaster, FontMetrics, GlyphSource, TextStack, TextStyle};
 
 /// 一份字体的选择元数据。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +75,25 @@ impl Default for FontSet {
 impl FontSet {
     pub fn new() -> Self {
         Self { fonts: Vec::new() }
+    }
+
+    /// 加入一份字体，族名/字重从字体表自动读取。
+    pub fn add_with_family(
+        &mut self,
+        font_id: u32,
+        bytes: &[u8],
+        family: &str,
+    ) -> Result<&mut Self, String> {
+        if self.fonts.iter().any(|s| s.source.font_id() == font_id) {
+            return Err(format!("重复的 font_id {font_id}"));
+        }
+        let source = AbGlyphSource::from_bytes(font_id, bytes)?;
+        let weight = source.weight_class();
+        self.fonts.push(FontSlot {
+            meta: FontMeta::new(family, weight),
+            source,
+        });
+        Ok(self)
     }
 
     /// 加入一份字体。`font_id` 必须唯一 —— 它进图集键，重复会让同一字形存两份。
@@ -325,6 +344,71 @@ impl GlyphSource for FontSet {
 
     fn font_id(&self) -> u32 {
         self.fonts.first().map(|s| s.source.font_id()).unwrap_or(0)
+    }
+}
+
+/// 多字体文本栈：从指定文件 + emoji 字体构造。
+///
+/// 与单字体版不同，这里总是把一份 emoji 字体加进回退链，这样 COLR/CBDT 彩色
+/// emoji 在 UI 里能直接出现，而不必依赖宿主单独处理。
+pub fn from_font_file_set(path: &str) -> (TextStack<FontSet>, String) {
+    let mut set = FontSet::new();
+    if let Ok(bytes) = std::fs::read(path) {
+        if !bytes.is_empty() {
+            let _ = set.add_with_family(0, &bytes, &family_from_path(path));
+        }
+    }
+    add_emoji(&mut set, 100);
+    let count = set.len();
+    (TextStack::new(set), format!("字体栈 {path}（{count} 份）"))
+}
+
+/// 多字体文本栈：环境变量指定的字体优先，随后是系统候选与 emoji 字体。
+pub fn from_system_font_set() -> (TextStack<FontSet>, String) {
+    let mut set = FontSet::new();
+    let mut paths: Vec<String> = Vec::new();
+    if let Ok(p) = std::env::var(super::FONT_OVERRIDE_ENV) {
+        if !p.is_empty() {
+            paths.push(p);
+        }
+    }
+    paths.extend(super::ab_glyph_source::FONT_CANDIDATES.iter().map(|s| s.to_string()));
+    paths.extend(EMOJI_CANDIDATES.iter().map(|s| s.to_string()));
+    let mut tried = 0usize;
+    for (i, path) in paths.iter().enumerate() {
+        tried += 1;
+        if let Ok(bytes) = std::fs::read(path) {
+            if !bytes.is_empty() && set.add_with_family(i as u32, &bytes, &family_from_path(path)).is_err() {
+                tried -= 1;
+            }
+        }
+    }
+    let count = set.len();
+    (
+        TextStack::new(set),
+        format!("字体栈（{count} 份，试过 {tried} 个路径）"),
+    )
+}
+
+const EMOJI_CANDIDATES: &[&str] = &[
+    "C:\\Windows\\Fonts\\seguiemj.ttf",
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+];
+
+fn family_from_path(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "default".into())
+}
+
+fn add_emoji(set: &mut FontSet, font_id: u32) {
+    for path in EMOJI_CANDIDATES {
+        if let Ok(bytes) = std::fs::read(path) {
+            if !bytes.is_empty() && set.add_with_family(font_id, &bytes, "Emoji").is_ok() {
+                break;
+            }
+        }
     }
 }
 
