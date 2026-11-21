@@ -25,7 +25,8 @@ fn shade_source(i: VsOut) -> vec4f {
     // kind == 1：字形。采样方式由 `i.shape`（模式码，flat）决定：
     //   0 = 旧覆盖率（读 alpha）；1 = 单通道 SDF（读 red）；
     //   2 = MSDF（rgb 取中位数）；3/4 = MSDF + LCD 子像素（RGB/BGR）。
-    // `i.corner.x` 是 smoothstep 半宽 `w`，`i.corner.y` 是伪粗体阈值偏移。
+    // `i.corner.x` 是排版端给出的平滑半宽 `w`（CPU 参考光栅用），GPU 侧用
+    // fwidth 自适应；`i.corner.y` 是伪粗体阈值偏移。
     if (i.kind > 0.5 && i.kind < 1.5) {
         let mode = i.shape;
         let w = i.corner.x;
@@ -36,13 +37,18 @@ fn shade_source(i: VsOut) -> vec4f {
         // LCD 分支把逐通道覆盖率直接乘进 RGB，末尾不能再乘一次标量 coverage。
         var per_channel_rgb = false;
 
+        // 屏幕空间导数决定过渡带宽度：一个屏幕像素对应的 SDF 变化量取一半
+        // 作为 smoothstep 半宽。固定 w 在不同缩放/基准档下会偏宽（糊）或
+        // 偏窄（锯齿）；fwidth 自适应。导数必须在分支外求（uniform 控制流）。
+        let s_msdf = max(min(texel.r, texel.g), min(max(texel.r, texel.g), texel.b));
+        let aa = max(clamp(0.5 * fwidth(s_msdf), 0.00001, 0.5), w * 0.25);
+
         if (mode < 0.5) {
             coverage = texel.a;
         } else if (mode < 1.5) {
-            coverage = smoothstep(0.5 - w, 0.5 + w, texel.r);
+            coverage = smoothstep(0.5 - aa, 0.5 + aa, texel.r);
         } else if (mode < 2.5) {
-            let s = max(min(texel.r, texel.g), min(max(texel.r, texel.g), texel.b));
-            coverage = smoothstep(0.5 - w - emb, 0.5 + w - emb, s);
+            coverage = smoothstep(0.5 - aa - emb, 0.5 + aa - emb, s_msdf);
         } else if (mode < 4.5) {
             // LCD：沿 x 取三次 MSDF 样本。BGR 把偏移方向反过来。
             let dir = select(-1.0, 1.0, mode < 3.5);
@@ -52,7 +58,7 @@ fn shade_source(i: VsOut) -> vec4f {
                 let off = (f32(k) - 1.0) * subpix;
                 let s3 = textureSample(g_tex, g_smp, i.uv + vec2f(off, 0.0)).rgb;
                 let sd = max(min(s3.r, s3.g), min(max(s3.r, s3.g), s3.b));
-                cov[k] = smoothstep(0.5 - w - emb, 0.5 + w - emb, sd);
+                cov[k] = smoothstep(0.5 - aa - emb, 0.5 + aa - emb, sd);
             }
             // 逐通道覆盖率进 RGB：三个子像素各自用自己的覆盖率着色。
             // alpha 取三通道最大值，SrcOver 混合时目标按最强的子像素让位。

@@ -108,12 +108,13 @@ fn wgsl_parts_concatenate_to_a_valid_module_shape() {
     assert!(src.contains("fn fs_refraction"), "缺少折射入口");
     // 字形分支按 mode 分派：覆盖率(0)/SDF(1)/MSDF(2)/LCD(3,4)。
     // SDF 模式仍读 red 通道；旧覆盖率路径在 mode < 0.5 时读 alpha。
-    assert!(src.contains("smoothstep(0.5 - w, 0.5 + w, texel.r)"));
+    assert!(src.contains("smoothstep(0.5 - aa, 0.5 + aa, texel.r)"));
     assert!(src.contains("mode < 0.5"));
     assert!(src.contains("coverage = texel.a"));
-    // MSDF 的中位数重建与伪粗体阈值。
+    // MSDF 的中位数重建与伪粗体阈值；AA 半宽改用屏幕导数自适应。
     assert!(src.contains("max(min(texel.r, texel.g)"));
-    assert!(src.contains("0.5 - w - emb"));
+    assert!(src.contains("0.5 - aa - emb"));
+    assert!(src.contains("fwidth(s_msdf)"));
     // LCD 三次采样：子像素步长 = 每像素 uv 步长 / 3。
     assert!(src.contains("duv_dx * dir / 3.0"));
 }

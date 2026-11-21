@@ -158,9 +158,8 @@ float4 ShadeSource(VSOut i) {
     //   0 = 旧覆盖率（读 alpha）；1 = 单通道 SDF（读 red）；
     //   2 = MSDF（rgb 取中位数）；3/4 = MSDF + LCD 子像素（RGB/BGR）。
     //
-    // `i.corner.x` 是 smoothstep 半宽 `w`，由排版端按当前显示字号算好：
-    // `w = AA_BAND / (2 · spread · (显示字号 / 基准字号))`。字号越大 w 越小，
-    // 于是过渡带在屏幕空间恒为约 1px —— 「任意字号都锐利」的根据。
+    // `i.corner.x` 是排版端给出的平滑半宽 `w`（CPU 参考光栅用）；GPU 侧改用
+    // `fwidth(MSDF)` 自适应半宽，任意字号/缩放都约 1px，且不会固定过宽发糊。
     // `i.corner.y` 是伪粗体阈值偏移（仅 MSDF/LCD 读）。
     if (i.kind > 0.5 && i.kind < 1.5) {
         float mode = i.shape;
@@ -172,14 +171,22 @@ float4 ShadeSource(VSOut i) {
         // LCD 分支把逐通道覆盖率直接乘进 RGB，末尾不能再乘一次标量 coverage。
         bool per_channel_rgb = false;
 
+        // 屏幕空间导数决定过渡带宽度：一个屏幕像素对应多少 SDF 值域变化，
+        // 就取半个像素作为 smoothstep 半宽。固定 `w` 在缩放/不同基准档下会
+        // 偏宽（糊）或偏窄（锯齿）；fwidth 自适应，且放大时更锐利、
+        // 缩小时自动加宽以避免闪烁。导数在分支外求，保证 uniform 控制流。
+        float s_msdf = max(min(texel.r, texel.g), min(max(texel.r, texel.g), texel.b));
+        float aa = clamp(0.5 * fwidth(s_msdf), 1e-5, 0.5);
+        // CPU 参考光栅与无导数环境用 `w` 兜底。
+        aa = max(aa, w * 0.25);
+
         if (mode < 0.5) {
             // 替身/降级：没有真实距离场，退回覆盖率位图。
             coverage = texel.a;
         } else if (mode < 1.5) {
-            coverage = smoothstep(0.5 - w, 0.5 + w, texel.r);
+            coverage = smoothstep(0.5 - aa, 0.5 + aa, texel.r);
         } else if (mode < 2.5) {
-            float s = max(min(texel.r, texel.g), min(max(texel.r, texel.g), texel.b));
-            coverage = smoothstep(0.5 - w - emb, 0.5 + w - emb, s);
+            coverage = smoothstep(0.5 - aa - emb, 0.5 + aa - emb, s_msdf);
         } else if (mode < 4.5) {
             // LCD：沿 x 取三次 MSDF 样本。BGR 把偏移方向反过来。
             float dir = (mode < 3.5) ? 1.0 : -1.0;
@@ -190,7 +197,7 @@ float4 ShadeSource(VSOut i) {
                 float off = (float(k) - 1.0) * subpix;
                 float3 s3 = g_tex.Sample(g_smp, i.uv + float2(off, 0.0)).rgb;
                 float sd = max(min(s3.r, s3.g), min(max(s3.r, s3.g), s3.b));
-                cov[k] = smoothstep(0.5 - w - emb, 0.5 + w - emb, sd);
+                cov[k] = smoothstep(0.5 - aa - emb, 0.5 + aa - emb, sd);
             }
             // 逐通道覆盖率进 RGB：三个子像素各自用自己的覆盖率着色，得到真正的
             // ClearType/RGB 子像素效果（而不是把所有通道统一乘一个均值 alpha）。
