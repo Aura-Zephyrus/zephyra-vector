@@ -74,10 +74,16 @@ fn gradient_at(g: &GradientPaint, x: f32, y: f32) -> Color {
     let (o1, c1) = stops.get(i + 1).copied().unwrap_or((1.0, c0));
     let f = if (o1 - o0).abs() < 1e-6 { 0.0 } else { (t - o0) / (o1 - o0) };
     let f = clamp01(f);
+    // 色标是 sRGB 编码值；在线性光空间插值再编码回 sRGB。
+    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let enc = |v: f32| {
+        let v = clamp01(v);
+        if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+    };
     Color::rgba(
-        c0.r + (c1.r - c0.r) * f,
-        c0.g + (c1.g - c0.g) * f,
-        c0.b + (c1.b - c0.b) * f,
+        enc(lin(c0.r) + (lin(c1.r) - lin(c0.r)) * f),
+        enc(lin(c0.g) + (lin(c1.g) - lin(c0.g)) * f),
+        enc(lin(c0.b) + (lin(c1.b) - lin(c0.b)) * f),
         c0.a + (c1.a - c0.a) * f,
     )
 }

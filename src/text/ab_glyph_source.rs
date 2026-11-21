@@ -91,9 +91,12 @@ pub struct AbGlyphSource {
     font_id: u32,
     /// COLR 彩色分层的按需缓存。Segoe UI Emoji 的 v1 paint graph 全量解析
     /// 有 3487 个 glyph，构造时全跑会卡住启动；只在实际排版到某个字形时解析。
-    color_cache: RefCell<HashMap<u32, Vec<ColorLayer>>>,
+    /// key = (palette, glyph_id)：切换调色板必须重新解析层颜色。
+    color_cache: RefCell<HashMap<(u16, u32), Vec<ColorLayer>>>,
     /// 当前生效的可变字体轴；用来做幂等跳过与回退默认轴。
     applied_variations: Vec<([u8; 4], f32)>,
+    /// 当前 CPAL 调色板索引（COLR v1）。
+    palette: u16,
 }
 
 impl AbGlyphSource {
@@ -111,6 +114,7 @@ impl AbGlyphSource {
             font_id,
             color_cache: RefCell::new(HashMap::new()),
             applied_variations: Vec::new(),
+            palette: 0,
         })
     }
 
@@ -488,6 +492,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
                     font_id: u32::MAX,
                     color_cache: RefCell::new(HashMap::new()),
                     applied_variations: Vec::new(),
+            palette: 0,
                 }),
                 format!("字体 {path} 解析失败（{e}），已退回无文本模式"),
             ),
@@ -498,6 +503,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
                 font_id: u32::MAX,
                 color_cache: RefCell::new(HashMap::new()),
                 applied_variations: Vec::new(),
+            palette: 0,
             }),
             format!("字体 {path} 是空文件，已退回无文本模式"),
         ),
@@ -507,6 +513,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
                 font_id: u32::MAX,
                 color_cache: RefCell::new(HashMap::new()),
                 applied_variations: Vec::new(),
+            palette: 0,
             }),
             format!("读不到字体 {path}（{e}），已退回无文本模式"),
         ),
@@ -555,6 +562,7 @@ pub fn from_system_font() -> (TextStack<AbGlyphSource>, String) {
             font_id: u32::MAX,
             color_cache: RefCell::new(HashMap::new()),
             applied_variations: Vec::new(),
+            palette: 0,
         }),
         format!(
             "未找到可用系统字体（试过 {} 个路径），已退回无文本模式",
@@ -598,6 +606,15 @@ impl GlyphSource for AbGlyphSource {
             .h_advance(GlyphId(glyph_id.min(u16::MAX as u32) as u16))
     }
 
+    fn set_palette(&mut self, palette: u16) {
+        if self.palette == palette {
+            return;
+        }
+        self.palette = palette;
+        // 层颜色来自 CPAL，调色板变了必须整套重解。
+        self.color_cache.borrow_mut().clear();
+    }
+
     fn set_variations(&mut self, variations: &[([u8; 4], f32)]) {
         if self.applied_variations.as_slice() == variations {
             return;
@@ -613,12 +630,14 @@ impl GlyphSource for AbGlyphSource {
     }
 
     fn color_layers(&self, glyph_id: u32) -> Option<Vec<ColorLayer>> {
-        if let Some(cached) = self.color_cache.borrow().get(&glyph_id) {
+        let key = (self.palette, glyph_id);
+        if let Some(cached) = self.color_cache.borrow().get(&key) {
             return (!cached.is_empty()).then(|| cached.clone());
         }
-        let layers = parse_color_glyph(self.font.as_slice(), glyph_id).unwrap_or_default();
+        let layers =
+            parse_color_glyph(self.font.as_slice(), glyph_id, self.palette).unwrap_or_default();
         let result = (!layers.is_empty()).then(|| layers.clone());
-        self.color_cache.borrow_mut().insert(glyph_id, layers);
+        self.color_cache.borrow_mut().insert(key, layers);
         result
     }
 

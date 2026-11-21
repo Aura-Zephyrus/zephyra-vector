@@ -243,6 +243,12 @@ impl GlyphSource for FontSet {
         self.fonts.first()?.source.metrics(px_size)
     }
 
+    fn set_palette(&mut self, palette: u16) {
+        for slot in &mut self.fonts {
+            slot.source.set_palette(palette);
+        }
+    }
+
     fn set_variations(&mut self, variations: &[([u8; 4], f32)]) {
         // 每份字体都同步，回退切换时不必再设置一次。
         for slot in &mut self.fonts {

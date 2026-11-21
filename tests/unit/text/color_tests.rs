@@ -74,6 +74,28 @@ fn color_glyph_is_one_exact_rgba_quad() {
 }
 
 #[test]
+fn palette_selection_and_linear_gradient_are_real() {
+    let bytes = match std::fs::read(EMOJI_FONT) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let mut src = match AbGlyphSource::from_bytes(0, &bytes) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let gid = src.glyph_id('😀');
+    let p0 = crate::text::color::parse_color_glyph(&bytes, gid, 0);
+    let p1 = crate::text::color::parse_color_glyph(&bytes, gid, 1);
+    if let (Some(a), Some(b)) = (p0, p1) {
+        assert_ne!(a, b, "不同 CPAL 调色板应产出不同层颜色");
+    }
+    // 渐变必须带真实色标（不是被压成纯色）。
+    let layers = src.color_layers(gid).unwrap();
+    let grad = layers.iter().find_map(|l| l.gradient.as_ref()).unwrap();
+    assert!(grad.stops.len() >= 2, "渐变至少两个色标");
+}
+
+#[test]
 fn non_color_source_has_no_layers() {
     let src = FixedWidth { advance: 10.0 };
     assert!(GlyphSource::color_layers(&src, 'A' as u32).is_none());

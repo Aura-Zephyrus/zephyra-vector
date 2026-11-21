@@ -11,8 +11,8 @@
 //!
 //! COLR 层不再展开成多片纯色 MSDF quad，而是由 [`crate::text::color_raster`]
 //! 在栅格化阶段把真实渐变、仿射变换、裁剪盒与 `CompositeMode` 逐像素合成进一张
-//! RGBA 位图（一个字形 = 一个 quad = 一次 ColorRgba 采样）。调色板固定 palette 0，
-//! 与 `paint_color_glyph(..., 0, ...)` 一致。
+//! RGBA 位图（一个字形 = 一个 quad = 一次 ColorRgba 采样）。调色板索引由
+//! `TextStyle::palette` 选择并传给 `paint_color_glyph`；色标在**线性光**空间插值。
 
 use std::marker::PhantomData;
 
@@ -170,6 +170,7 @@ struct LayerPainter<'a> {
     pending: Option<(u32, Option<[f32; 6]>, Option<Rect>, Option<BlendMode>)>,
     transforms: Vec<[f32; 6]>,
     clips: Vec<Rect>,
+    palette: u16,
     _lt: PhantomData<&'a ()>,
 }
 
@@ -196,7 +197,7 @@ impl<'a> Painter<'a> for LayerPainter<'a> {
         let (color, gradient) = match paint {
             Paint::Solid(c) => (rgba(c), None),
             Paint::LinearGradient(g) => {
-                let stops = collect_stops(g.stops(0, &[]));
+                let stops = collect_stops(g.stops(self.palette, &[]));
                 let gp = GradientPaint {
                     kind: GradientKind::Linear {
                         x0: g.x0, y0: g.y0, x1: g.x1, y1: g.y1, x2: g.x2, y2: g.y2,
@@ -207,7 +208,7 @@ impl<'a> Painter<'a> for LayerPainter<'a> {
                 (representative(&stops), Some(gp))
             }
             Paint::RadialGradient(g) => {
-                let stops = collect_stops(g.stops(0, &[]));
+                let stops = collect_stops(g.stops(self.palette, &[]));
                 let gp = GradientPaint {
                     kind: GradientKind::Radial {
                         x0: g.x0, y0: g.y0, r0: g.r0, x1: g.x1, y1: g.y1, r1: g.r1,
@@ -218,7 +219,7 @@ impl<'a> Painter<'a> for LayerPainter<'a> {
                 (representative(&stops), Some(gp))
             }
             Paint::SweepGradient(g) => {
-                let stops = collect_stops(g.stops(0, &[]));
+                let stops = collect_stops(g.stops(self.palette, &[]));
                 let gp = GradientPaint {
                     kind: GradientKind::Sweep {
                         cx: g.center_x, cy: g.center_y, start: g.start_angle, end: g.end_angle,
@@ -272,7 +273,7 @@ impl<'a> Painter<'a> for LayerPainter<'a> {
 }
 
 /// 按需解析**单个** glyph 的 COLR 分层（v0 与 v1）。
-pub fn parse_color_glyph(font_bytes: &[u8], glyph_id: u32) -> Option<Vec<ColorLayer>> {
+pub fn parse_color_glyph(font_bytes: &[u8], glyph_id: u32, palette: u16) -> Option<Vec<ColorLayer>> {
     let face = Face::parse(font_bytes, 0).ok()?;
     if face.raw_face().table(Tag::from_bytes(b"COLR")).is_none() {
         return None;
@@ -282,11 +283,12 @@ pub fn parse_color_glyph(font_bytes: &[u8], glyph_id: u32) -> Option<Vec<ColorLa
         pending: None,
         transforms: Vec::new(),
         clips: Vec::new(),
+        palette,
         _lt: PhantomData,
     };
     face.paint_color_glyph(
         GlyphId(glyph_id as u16),
-        0,
+        palette,
         RgbaColor::new(255, 255, 255, 255),
         &mut painter,
     )?;

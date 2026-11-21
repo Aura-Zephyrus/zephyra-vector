@@ -181,12 +181,15 @@ pub trait GlyphSource {
     /// `None` = 空白字形（空格、零宽字符）—— 它们没有位图，但**有**步进。
     fn rasterize(&mut self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster>;
 
+    /// 选择 COLR v1 的 CPAL 调色板。默认无操作（非彩色字形来源）。
+    fn set_palette(&mut self, _palette: u16) {}
+
     /// 应用可变字体轴。默认无操作（不可变字体/替身）。
     ///
     /// `TextStack` 在排版与绘制前调用；实现须保证同参数重复调用幂等。
     fn set_variations(&mut self, _variations: &[([u8; 4], f32)]) {}
 
-    /// 彩色字形（COLR v0）的分层；普通字形返回 `None`。
+    /// 彩色字形（COLR v0/v1）的分层；普通字形返回 `None`。
     ///
     /// 返回借用切片，避免每帧克隆；字体来源应在构造时解析并缓存这张表。
     fn color_layers(&self, _glyph_id: u32) -> Option<Vec<crate::text::ColorLayer>> {
@@ -406,6 +409,8 @@ pub struct TextStyle {
     pub path: Option<TextPath>,
     /// 断行时允许在单词内按音节加连字符（Skia 的 hyphenation，规则回退版）。
     pub hyphens: bool,
+    /// CPAL 调色板索引（COLR v1 彩色字形用）；默认 0。
+    pub palette: u16,
     /// 可变字体轴设置：`([四字节 tag], 值)`，如 `(*b"wght", 700.0)`。
     ///
     /// 对应 Skia `SkFontArguments::VariationPosition`。轴不存在时安全忽略。
@@ -468,6 +473,7 @@ impl Default for TextStyle {
             rotation: None,
             path: None,
             hyphens: false,
+            palette: 0,
             variations: Vec::new(),
             max_lines: None,
             ellipsis: None,
