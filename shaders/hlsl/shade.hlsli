@@ -176,9 +176,9 @@ float4 ShadeSource(VSOut i) {
         // 偏宽（糊）或偏窄（锯齿）；fwidth 自适应，且放大时更锐利、
         // 缩小时自动加宽以避免闪烁。导数在分支外求，保证 uniform 控制流。
         float s_msdf = max(min(texel.r, texel.g), min(max(texel.r, texel.g), texel.b));
-        float aa = clamp(0.5 * fwidth(s_msdf), 1e-5, 0.5);
+        float aa = clamp(0.4 * fwidth(s_msdf), 1e-5, 0.5);
         // CPU 参考光栅与无导数环境用 `w` 兜底。
-        aa = max(aa, w * 0.25);
+        aa = max(aa, w * 0.15);
 
         if (mode < 0.5) {
             // 替身/降级：没有真实距离场，退回覆盖率位图。

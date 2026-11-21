@@ -41,7 +41,7 @@ fn shade_source(i: VsOut) -> vec4f {
         // 作为 smoothstep 半宽。固定 w 在不同缩放/基准档下会偏宽（糊）或
         // 偏窄（锯齿）；fwidth 自适应。导数必须在分支外求（uniform 控制流）。
         let s_msdf = max(min(texel.r, texel.g), min(max(texel.r, texel.g), texel.b));
-        let aa = max(clamp(0.5 * fwidth(s_msdf), 0.00001, 0.5), w * 0.25);
+        let aa = max(clamp(0.4 * fwidth(s_msdf), 0.00001, 0.5), w * 0.15);
 
         if (mode < 0.5) {
             coverage = texel.a;
