@@ -42,7 +42,7 @@
 //! 尺寸把 DIP 映射到 NDC，于是同一个 `DisplayList` 在 100% 与 200% 缩放下
 //! 尺寸相同、内容清晰 —— 因为栅格化发生在物理像素上。
 
-use crate::core::{Color, Point, Rect, UvRect};
+use crate::core::{Color, Point, Rect, Size, UvRect};
 use crate::paint::{Command, DisplayList, GlyphMask};
 use std::rc::Rc;
 
@@ -446,6 +446,49 @@ impl Vertex {
             kind::GLYPH,
             mode,
         )
+    }
+
+    /// 旋转后的字形四边形：四个角点由调用方按字形中心旋转后给出。
+    ///
+    /// `local`/`half_size` 对字形分支不参与 SDF 计算（片元直接采样纹理），但仍填
+    /// 与未旋转时相同的语义值，方便 CPU 参考光栅与调试输出。
+    pub fn from_glyph_corners(
+        corners: [Point; 4],
+        size: crate::core::Size,
+        px: (f32, f32),
+        color: [f32; 4],
+        uv: UvRect,
+        mask: GlyphMask,
+    ) -> [Vertex; 4] {
+        let (w, h) = (px.0.max(1e-6), px.1.max(1e-6));
+        let nx = |x: f32| x / w * 2.0 - 1.0;
+        let ny = |y: f32| 1.0 - y / h * 2.0;
+        let ca = color[3];
+        let color = [color[0] * ca, color[1] * ca, color[2] * ca, ca];
+        let corner = [mask.w().max(1e-5), mask.embolden()];
+        let half_size = [size.width * 0.5, size.height * 0.5];
+        let locals = [
+            [0.0, 0.0],
+            [size.width, 0.0],
+            [size.width, size.height],
+            [0.0, size.height],
+        ];
+        let uvs = [
+            [uv.x, uv.y],
+            [uv.right(), uv.y],
+            [uv.right(), uv.bottom()],
+            [uv.x, uv.bottom()],
+        ];
+        std::array::from_fn(|i| Vertex {
+            position: [nx(corners[i].x), ny(corners[i].y)],
+            local: locals[i],
+            uv: uvs[i],
+            color,
+            corner,
+            half_size,
+            kind: kind::GLYPH,
+            shape: mask.mode_code(),
+        })
     }
 
     /// 带圆角的图像四边形（`kind == IMAGE`）。
@@ -1733,9 +1776,36 @@ pub fn expand_range_translated_into(
                         .color
                         .map_or(default_rgba, |c| [c.r, c.g, c.b, c.a]);
                     if (g.kind - kind::GLYPH).abs() < 0.01 {
-                        out.solid.extend_from_slice(&Vertex::from_glyph_rect(
-                            rect, px, rgba, uv, g.mask,
-                        ));
+                        if g.rotation != 0.0 {
+                            // 旋转字形：四个角绕自身中心转。裁剪仍按未旋转矩形做，
+                            // 因此旋转后的尖角可能略微越过裁剪框（圆弧文字很小众，
+                            // 这里接受该近似，换取零后端改动）。
+                            let (cx, cy) = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+                            let (s, c) = g.rotation.sin_cos();
+                            let rotate = |x: f32, y: f32| {
+                                let dx = x - cx;
+                                let dy = y - cy;
+                                Point::new(cx + dx * c - dy * s, cy + dx * s + dy * c)
+                            };
+                            let corners = [
+                                rotate(rect.x, rect.y),
+                                rotate(rect.x + rect.width, rect.y),
+                                rotate(rect.x + rect.width, rect.y + rect.height),
+                                rotate(rect.x, rect.y + rect.height),
+                            ];
+                            out.solid.extend_from_slice(&Vertex::from_glyph_corners(
+                                corners,
+                                Size::new(rect.width, rect.height),
+                                px,
+                                rgba,
+                                uv,
+                                g.mask,
+                            ));
+                        } else {
+                            out.solid.extend_from_slice(&Vertex::from_glyph_rect(
+                                rect, px, rgba, uv, g.mask,
+                            ));
+                        }
                     } else {
                         // 装饰线：纯色圆角矩形（半径取半线宽，得到 1px 抗锯齿），
                         // 不采样纹理。复用 RECT 分支，不增加 shader 变体。

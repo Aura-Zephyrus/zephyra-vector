@@ -98,6 +98,7 @@ fn push_decoration(
             color_glyph: false,
             // RECT 分支不读 mask，填一个合法值即可。
             mask: GlyphMask::Coverage,
+            rotation: 0.0,
             color: None,
             kind: crate::render::quad::kind::RECT,
         });
@@ -394,6 +395,7 @@ impl<S: GlyphSource> TextStack<S> {
                             advance: g.advance + spacing,
                             color_glyph: g.color_glyph,
                             embolden: g.embolden,
+                            rotation: 0.0,
                         });
                         break_after.push(is_space);
                         // 间距计入行宽：否则对齐与断行用的宽度与实际字形跨度不一致。
@@ -412,6 +414,7 @@ impl<S: GlyphSource> TextStack<S> {
                         advance: adv,
                         color_glyph: false,
                         embolden: 0.0,
+                        rotation: 0.0,
                     });
                     break_after.push(false);
                     pen += adv;
@@ -502,6 +505,7 @@ impl<S: GlyphSource> TextStack<S> {
                                 advance: g.advance,
                                 color_glyph: g.color_glyph,
                                 embolden: g.embolden,
+                                rotation: 0.0,
                             });
                         }
                     }
@@ -541,6 +545,26 @@ impl<S: GlyphSource> TextStack<S> {
                 if x_offset != 0.0 {
                     for g in line.glyphs.iter_mut() {
                         g.offset.x += x_offset;
+                    }
+                }
+            }
+        }
+
+        // 旋转 / 圆弧路径：给每个字形算自身旋转角（以及圆弧上的垂直偏移）。
+        if style.rotation.is_some() || style.path.is_some() {
+            for line in &mut lines {
+                let half = line.width * 0.5;
+                for g in &mut line.glyphs {
+                    match style.path {
+                        Some(super::TextPath::Arc { radius }) if radius.abs() > 1.0 => {
+                            let sign = radius.signum();
+                            let r = radius.abs();
+                            let x = (g.offset.x + g.advance * 0.5 - half).clamp(-r + 1.0, r - 1.0);
+                            let sag = r - (r * r - x * x).max(0.0).sqrt();
+                            g.offset.y -= sign * sag;
+                            g.rotation = -sign * (x / r).asin();
+                        }
+                        _ => g.rotation = style.rotation.unwrap_or(0.0),
                     }
                 }
             }
@@ -748,6 +772,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                                 embolden: style.embolden.unwrap_or(g.embolden),
                             },
                         },
+                        rotation: g.rotation,
                         color,
                         kind: crate::render::quad::kind::GLYPH,
                     });

@@ -759,6 +759,7 @@ fn text_offscreen_bounds_is_union_of_all_glyphs() {
         uv: crate::core::UvRect::FULL,
         color_glyph: false,
         mask: crate::paint::GlyphMask::Coverage,
+        rotation: 0.0,
         color: None,
         kind: crate::render::quad::kind::GLYPH,
     };

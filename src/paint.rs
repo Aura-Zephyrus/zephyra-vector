@@ -471,6 +471,8 @@ pub struct GlyphQuad {
     pub color_glyph: bool,
     /// 采样方式。取代原先的 `sdf: Option<f32>`。
     pub mask: GlyphMask,
+    /// 该字形绕自身中心旋转的弧度（0 = 不旋转；圆弧路径由排版端填入）。
+    pub rotation: f32,
     /// 逐字形颜色覆盖；`None` 用 `Command::Text::color`（正文/装饰线默认色）。
     ///
     /// 文字阴影用它给副本一个独立颜色；这比给 `Command::Text` 加"阴影色再画一遍"

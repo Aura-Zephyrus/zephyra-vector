@@ -109,6 +109,9 @@ mod variation_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/text/hyphenation_tests.rs"]
 mod hyphenation_tests;
+#[cfg(test)]
+#[path = "../../tests/unit/text/path_tests.rs"]
+mod path_tests;
 
 pub use atlas::{
     AtlasGlyph, AtlasRaster, AtlasStats, EntryInfo, EvictPlan, EvictionPolicy, GlyphAtlas,
@@ -337,6 +340,13 @@ pub struct StrutStyle {
     pub force: bool,
 }
 
+/// 文字路径，对应 Skia `SkTextBlob` 的 `TextPath` 效果（这里取圆弧子集）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TextPath {
+    /// 沿圆弧排布；`radius` 为正时向上凸、为负时向下凹。
+    Arc { radius: f32 },
+}
+
 /// 文字阴影，对应 Skia `TextShadow`（`fColor` / `fOffset` / `fBlurSigma`）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextShadow {
@@ -379,6 +389,10 @@ pub struct TextStyle {
     ///
     /// 对应 CSS `word-spacing`，与 [`Self::letter_spacing`] 叠加。
     pub word_spacing: f32,
+    /// 每个字形绕自身中心旋转（弧度）；与 `path` 互斥，`path` 优先。
+    pub rotation: Option<f32>,
+    /// 沿路径排布（当前支持圆弧）。
+    pub path: Option<TextPath>,
     /// 断行时允许在单词内按音节加连字符（Skia 的 hyphenation，规则回退版）。
     pub hyphens: bool,
     /// 可变字体轴设置：`([四字节 tag], 值)`，如 `(*b"wght", 700.0)`。
@@ -440,6 +454,8 @@ impl Default for TextStyle {
             strut: None,
             letter_spacing: 0.0,
             word_spacing: 0.0,
+            rotation: None,
+            path: None,
             hyphens: false,
             variations: Vec::new(),
             max_lines: None,
@@ -530,6 +546,8 @@ pub struct PlacedGlyph {
     pub color_glyph: bool,
     /// 伪粗体阈值偏移（SDF 值域），由回退字体在字重不匹配时合成。
     pub embolden: f32,
+    /// 该字形绕自身中心的旋转（弧度）；0 = 不旋转。
+    pub rotation: f32,
 }
 
 /// 截断：把超宽文本裁到 `max_width` 并加省略号。
@@ -663,6 +681,7 @@ impl TextEngine for NullEngine {
                         advance: cw,
                         color_glyph: false,
                         embolden: 0.0,
+                        rotation: 0.0,
                     };
                     x += cw;
                     g
@@ -802,6 +821,7 @@ pub fn quads_from_shaped(
                 color_glyph: g.color_glyph,
                 // 替身没有图集，走旧的覆盖率路径（uv 指向 (0,0) 那个像素）。
                 mask: GlyphMask::Coverage,
+                rotation: 0.0,
                 color: None,
                 kind: crate::render::quad::kind::GLYPH,
             });
