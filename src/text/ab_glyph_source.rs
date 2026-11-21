@@ -58,6 +58,7 @@ use std::collections::HashMap;
 use crate::core::Point;
 use crate::text::color::parse_color_layers;
 use crate::text::msdf::outline_segments;
+use crate::text::png::decode_png;
 use crate::text::sdf::{SDF_BASE_PX, SDF_PADDING, SDF_SPREAD};
 use crate::text::shape::{bidi_runs, dominant_script, rustybuzz_script, ShapedGlyph, ShapedRun};
 use crate::text::{AtlasRaster, ColorLayer, FontMetrics, GlyphSource, TextStack, TextStyle};
@@ -143,6 +144,42 @@ impl AbGlyphSource {
         // hhea 行高（字体单位）。ascent 为正、descent 为负，相减就是总行高。
         let line = self.font.height_unscaled().max(1.0);
         PxScale::from(px_em.max(1.0) * line / upem)
+    }
+
+    /// CBDT/CBLC（或 sbix/EBDT）内嵌位图 → 带留白的 RGBA 图集条目。
+    fn raster_bitmap(&self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster> {
+        use rustybuzz::ttf_parser::RasterImageFormat;
+        let face = rustybuzz::ttf_parser::Face::parse(self.font.as_slice(), 0).ok()?;
+        let image = face.glyph_raster_image(
+            rustybuzz::ttf_parser::GlyphId(glyph_id.min(u16::MAX as u32) as u16),
+            px_size.min(u16::MAX as u32) as u16,
+        )?;
+        if image.format != RasterImageFormat::PNG {
+            return None;
+        }
+        let (w, h, rgba) = decode_png(image.data)?;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let (m, pw) = (SDF_PADDING, w + 2 * SDF_PADDING);
+        let ph = h + 2 * SDF_PADDING;
+        let mut sdf = vec![0u8; (pw * ph * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let src = ((y * w + x) * 4) as usize;
+                let dst = (((y + m) * pw + x + m) * 4) as usize;
+                sdf[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+            }
+        }
+        Some(AtlasRaster {
+            offset: Point::new(image.x as f32, image.y as f32),
+            width: w,
+            height: h,
+            sdf,
+            spread: SDF_SPREAD,
+            base_px: image.pixels_per_em as f32,
+            is_bitmap: true,
+        })
     }
 
     /// 字体里是否真的有这个字形。
@@ -510,6 +547,11 @@ impl GlyphSource for AbGlyphSource {
     }
 
     fn rasterize(&mut self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster> {
+        // 位图 emoji（CBDT/CBLC / sbix / EBDT）优先：有内嵌位图时直接用它，
+        // 而不是栅格化轮廓 —— 那会丢失颜色。
+        if let Some(bitmap) = self.raster_bitmap(glyph_id, px_size) {
+            return Some(bitmap);
+        }
         // `px_size` 是排版端按显示字号选好的 SDF 基准档位（64/128/256）。
         // 大字号用高档位，避免单通道 SDF 过度放大导致笔画变钝、圆角被抹平。
         let px = px_size.max(SDF_BASE_PX) as f32;
@@ -594,6 +636,7 @@ impl GlyphSource for AbGlyphSource {
             sdf: mask,
             spread: SDF_SPREAD,
             base_px: px,
+            is_bitmap: false,
         })
     }
 

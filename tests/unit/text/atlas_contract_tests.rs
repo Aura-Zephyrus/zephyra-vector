@@ -118,6 +118,7 @@ fn diag_bitmap() -> AtlasRaster {
         sdf: padded(&coverage, w, h),
         spread: SDF_SPREAD,
         base_px: SDF_BASE_PX as f32,
+        is_bitmap: false,
     }
 }
 
@@ -198,6 +199,7 @@ fn later_glyph_insert_does_not_erase_existing_ones() {
         sdf: padded(&vec![200u8; 64 * 64], 64, 64),
         spread: SDF_SPREAD,
         base_px: SDF_BASE_PX as f32,
+        is_bitmap: false,
     };
     let big_entry = atlas
         .get_or_insert(1, 1, 16, Some(big))
@@ -239,6 +241,7 @@ fn blank_glyph_costs_no_space_but_has_an_entry() {
         sdf: Vec::new(),
         spread: SDF_SPREAD,
         base_px: SDF_BASE_PX as f32,
+        is_bitmap: false,
     };
     let e = atlas
         .get_or_insert(9, 5, 16, Some(blank))

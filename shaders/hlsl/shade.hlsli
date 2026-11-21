@@ -180,7 +180,7 @@ float4 ShadeSource(VSOut i) {
         } else if (mode < 2.5) {
             float s = max(min(texel.r, texel.g), min(max(texel.r, texel.g), texel.b));
             coverage = smoothstep(0.5 - w - emb, 0.5 + w - emb, s);
-        } else {
+        } else if (mode < 4.5) {
             // LCD：沿 x 取三次 MSDF 样本。BGR 把偏移方向反过来。
             float dir = (mode < 3.5) ? 1.0 : -1.0;
             float subpix = duv_dx * dir / 3.0;
@@ -198,6 +198,12 @@ float4 ShadeSource(VSOut i) {
             // 背景从笔画缝隙里透出来。顶点颜色已预乘 alpha，末尾不再乘第二次。
             out_rgb = i.color.rgb * cov;
             coverage = max(cov.r, max(cov.g, cov.b));
+            per_channel_rgb = true;
+        } else if (mode < 5.5) {
+            // CBDT/CBLC 彩色位图：RGBA 已解码在图集里，alpha 即覆盖率；
+            // RGB 先预乘自身 alpha，末尾不再乘标量 coverage。
+            coverage = texel.a;
+            out_rgb = texel.rgb * texel.a;
             per_channel_rgb = true;
         }
 

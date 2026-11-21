@@ -43,7 +43,7 @@ fn shade_source(i: VsOut) -> vec4f {
         } else if (mode < 2.5) {
             let s = max(min(texel.r, texel.g), min(max(texel.r, texel.g), texel.b));
             coverage = smoothstep(0.5 - w - emb, 0.5 + w - emb, s);
-        } else {
+        } else if (mode < 4.5) {
             // LCD：沿 x 取三次 MSDF 样本。BGR 把偏移方向反过来。
             let dir = select(-1.0, 1.0, mode < 3.5);
             let subpix = duv_dx * dir / 3.0;
@@ -58,6 +58,11 @@ fn shade_source(i: VsOut) -> vec4f {
             // alpha 取三通道最大值，SrcOver 混合时目标按最强的子像素让位。
             out_rgb = i.color.rgb * cov;
             coverage = max(cov.r, max(cov.g, cov.b));
+            per_channel_rgb = true;
+        } else if (mode < 5.5) {
+            // CBDT/CBLC 彩色位图：RGBA 已解码在图集里，alpha 即覆盖率。
+            coverage = texel.a;
+            out_rgb = texel.rgb * texel.a;
             per_channel_rgb = true;
         }
 

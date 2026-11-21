@@ -160,6 +160,7 @@ fn ensure_glyph<S: GlyphSource>(
         sdf: Vec::new(),
         spread: SDF_SPREAD,
         base_px: px as f32,
+        is_bitmap: false,
     });
     atlas.get_or_insert(font_id, glyph_id, px, Some(r));
 }
@@ -761,7 +762,10 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                         // 真实来源产出 MSDF；替身只填灰度 SDF，但三通道相等时
                         // `median(r,g,b)` 退化为单通道，所以同一条 shader 路径通用。
                         // LCD 只是 MSDF 上的另一种采样方式，不另存一套位图。
-                        mask: match style.lcd {
+                        mask: if entry.is_bitmap {
+                            GlyphMask::ColorRgba
+                        } else {
+                            match style.lcd {
                             Some(order) => GlyphMask::LcdMsdf {
                                 w,
                                 embolden: style.embolden.unwrap_or(g.embolden),
@@ -771,6 +775,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                                 w,
                                 embolden: style.embolden.unwrap_or(g.embolden),
                             },
+                            }
                         },
                         rotation: g.rotation,
                         color,
@@ -822,7 +827,7 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                                 embolden,
                                 order,
                             },
-                            GlyphMask::Coverage => GlyphMask::Coverage,
+                            GlyphMask::Coverage | GlyphMask::ColorRgba => q.mask,
                         };
                     }
                 }
@@ -988,6 +993,7 @@ impl GlyphSource for FixedWidth {
             sdf: from_coverage(&ink, n, n, SDF_PADDING),
             spread: SDF_SPREAD,
             base_px: SDF_BASE_PX as f32,
+            is_bitmap: false,
         })
     }
 
@@ -1039,6 +1045,7 @@ impl GlyphSource for VaryingOffset {
             sdf: from_coverage(&ink, w, h, SDF_PADDING),
             spread: SDF_SPREAD,
             base_px: SDF_BASE_PX as f32,
+            is_bitmap: false,
         })
     }
 

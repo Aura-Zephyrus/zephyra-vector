@@ -382,6 +382,8 @@ const RGBA: usize = 4;
 /// 一个已打包的字形：纹理内的位置与像素尺寸。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AtlasGlyph {
+    /// 该条目是 RGBA 位图（CBDT emoji）而不是 SDF/MSDF；采样方式由绘制端切换。
+    pub is_bitmap: bool,
     /// uv 矩形（**像素**单位，渲染器按图集边长归一化）。
     pub uv: Rect,
     /// 该字形栅格化后的像素尺寸。
@@ -547,6 +549,7 @@ impl GlyphAtlas {
                 offset: blank_offset,
                 spread: SDF_SPREAD,
                 base_px: SDF_BASE_PX as f32,
+                is_bitmap: false,
             };
             self.glyphs.insert(
                 key,
@@ -587,6 +590,7 @@ impl GlyphAtlas {
             offset: r.offset,
             spread: r.spread,
             base_px: r.base_px,
+            is_bitmap: r.is_bitmap,
         };
         self.glyphs.insert(
             key,
@@ -846,6 +850,8 @@ pub struct AtlasRaster {
     pub spread: f32,
     /// 生成时的基准字号（em 像素），供绘制端换算缩放。
     pub base_px: f32,
+    /// 该位图是 RGBA 彩色位图（CBDT/CBLC）而非 SDF；默认 false。
+    pub is_bitmap: bool,
 }
 
 /// 图集使用情况。

@@ -25,6 +25,7 @@ fn raster(w: u32, h: u32, offset: Point) -> AtlasRaster {
         sdf: padded(&ink, w, h),
         spread: SDF_SPREAD,
         base_px: SDF_BASE_PX as f32,
+        is_bitmap: false,
     }
 }
 
@@ -39,6 +40,7 @@ fn sparse_raster(w: u32, h: u32, offset: Point, value: u8) -> AtlasRaster {
         sdf: padded(&ink, w, h),
         spread: SDF_SPREAD,
         base_px: SDF_BASE_PX as f32,
+        is_bitmap: false,
     }
 }
 
@@ -313,6 +315,7 @@ fn packed_pixels_land_at_the_allocated_position() {
         sdf: padded(&[7], 1, 1),
         spread: SDF_SPREAD,
         base_px: SDF_BASE_PX as f32,
+        is_bitmap: false,
     };
     atlas_up.get_or_insert(0, 1, 16, Some(filler)).unwrap();
     let e2 = atlas_up
@@ -357,6 +360,7 @@ fn interior_pixels_keep_their_position_inside_the_bitmap() {
                 sdf: padded(&coverage, 4, 4),
                 spread: SDF_SPREAD,
                 base_px: SDF_BASE_PX as f32,
+                is_bitmap: false,
             }),
         )
         .unwrap();
@@ -405,6 +409,7 @@ fn oversized_coverage_is_clipped_not_written_out_of_bounds() {
                 },
                 spread: SDF_SPREAD,
                 base_px: SDF_BASE_PX as f32,
+                is_bitmap: false,
             }),
         )
         .unwrap();
@@ -652,6 +657,7 @@ fn survivor_uvs_do_not_overlap_and_point_to_own_bitmap() {
                     sdf: padded(&coverage, 8, 8),
                     spread: SDF_SPREAD,
                     base_px: SDF_BASE_PX as f32,
+                    is_bitmap: false,
                 }),
             )
             .unwrap_or_else(|| panic!("第 {n} 个应当放得下"));

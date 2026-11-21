@@ -420,6 +420,8 @@ pub enum GlyphMask {
         embolden: f32,
         order: LcdOrder,
     },
+    /// CBDT/CBLC 彩色位图：RGBA 直接采样，alpha 即覆盖率。
+    ColorRgba,
 }
 
 impl GlyphMask {
@@ -437,13 +439,14 @@ impl GlyphMask {
                 order: LcdOrder::Bgr,
                 ..
             } => 4.0,
+            Self::ColorRgba => 5.0,
         }
     }
 
     /// smoothstep 半宽；覆盖率路径返回 0。
     pub fn w(self) -> f32 {
         match self {
-            Self::Coverage => 0.0,
+            Self::Coverage | Self::ColorRgba => 0.0,
             Self::Sdf { w } | Self::Msdf { w, .. } | Self::LcdMsdf { w, .. } => w,
         }
     }

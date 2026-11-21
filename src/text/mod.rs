@@ -62,6 +62,7 @@ pub mod atlas;
 pub mod color;
 pub mod fontset;
 pub mod msdf;
+pub mod png;
 pub mod sdf;
 pub mod shape;
 pub mod stack;
@@ -112,6 +113,9 @@ mod hyphenation_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/text/path_tests.rs"]
 mod path_tests;
+#[cfg(test)]
+#[path = "../../tests/unit/text/bitmap_tests.rs"]
+mod bitmap_tests;
 
 pub use atlas::{
     AtlasGlyph, AtlasRaster, AtlasStats, EntryInfo, EvictPlan, EvictionPolicy, GlyphAtlas,
