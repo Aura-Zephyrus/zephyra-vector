@@ -46,6 +46,9 @@
 
 use crate::render::quad::{self, kind, Vertex};
 
+/// 与 shader 里的 `TEXT_CONTRAST` 一致（Skia `SK_GAMMA_CONTRAST` 默认值）。
+const TEXT_CONTRAST: f32 = 0.5;
+
 /// 一张 RGBA8 位图（**线性**颜色，未做 sRGB 编码）。
 ///
 /// 为什么是线性：与着色器输出一致。sRGB 编码只发生在**写文件给人看**的那一侧
@@ -283,7 +286,7 @@ impl CpuCanvas {
                 let half_size = a.half_size;
                 // `color` / `kind` 是逐四边形恒定的，取第一个顶点即可。
                 let color = a.color;
-                let coverage = match a.kind {
+                let mut coverage = match a.kind {
                     k if (k - kind::GLYPH).abs() < 0.01 => {
                         // `shape` 在字形分支里是采样模式码（矩形分支仍当角形状参数）。
                         let mode = a.shape;
@@ -340,6 +343,9 @@ impl CpuCanvas {
                     }
                     _ => sdf_coverage(local, half_size, a.corner, a.shape),
                 };
+                // 与 shader 一致：Skia 式覆盖率对比度预扭曲（默认 0.5）。
+                // CPU 参考光栅必须与 GPU 逐像素可比，尤其小字边缘的浓淡。
+                coverage = coverage + (1.0 - coverage) * TEXT_CONTRAST * coverage;
                 self.blend(px, py, color, coverage);
             }
         }

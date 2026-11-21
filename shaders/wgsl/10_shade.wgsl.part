@@ -1,3 +1,12 @@
+// 覆盖率对比度预扭曲（Skia `SkMaskGamma::apply_contrast`，默认 0.5）。
+const TEXT_CONTRAST: f32 = 0.5;
+fn apply_text_contrast(a: f32) -> f32 {
+    return a + (1.0 - a) * TEXT_CONTRAST * a;
+}
+fn apply_text_contrast3(a: vec3f) -> vec3f {
+    return a + (1.0 - a) * TEXT_CONTRAST * a;
+}
+
 /// 算出这一片元的**预乘**源色（不含任何混合）。
 ///
 /// 抽出来是因为「算出源色」这部分与混合模式**完全无关**，共用一份才不会出现
@@ -62,14 +71,17 @@ fn shade_source(i: VsOut) -> vec4f {
             }
             // 逐通道覆盖率进 RGB：三个子像素各自用自己的覆盖率着色。
             // alpha 取三通道最大值，SrcOver 混合时目标按最强的子像素让位。
+            cov = apply_text_contrast3(cov);
             out_rgb = i.color.rgb * cov;
             coverage = max(cov.r, max(cov.g, cov.b));
             per_channel_rgb = true;
         } else if (mode < 5.5) {
             // CBDT/CBLC 彩色位图：RGBA 已解码在图集里，alpha 即覆盖率。
-            coverage = texel.a;
-            out_rgb = texel.rgb * texel.a;
+            coverage = apply_text_contrast(texel.a);
+            out_rgb = texel.rgb * coverage;
             per_channel_rgb = true;
+        } else {
+            coverage = apply_text_contrast(coverage);
         }
 
         let a = coverage * i.color.a;

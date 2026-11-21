@@ -1,4 +1,15 @@
 
+// 覆盖率对比度预扭曲，照 Skia `SkMaskGamma::apply_contrast`：
+// `a' = a + (1-a) * contrast * a`（默认 contrast = 0.5，SK_GAMMA_CONTRAST）。
+// 线性 alpha 混合会把细笔画冲淡；预扭曲让中间覆盖率略暗，小字更实、边缘更干净。
+static const float TEXT_CONTRAST = 0.5f;
+float apply_text_contrast(float a) {
+    return a + (1.0f - a) * TEXT_CONTRAST * a;
+}
+float3 apply_text_contrast(float3 a) {
+    return a + (1.0f - a) * TEXT_CONTRAST * a;
+}
+
 /// 算出这一片元的**预乘**源色（不含任何混合）。
 ///
 /// 抽出来是因为可分离 / 非可分离混合要与 `dst` 合成，而「算出源色」这部分
@@ -203,15 +214,18 @@ float4 ShadeSource(VSOut i) {
             // ClearType/RGB 子像素效果（而不是把所有通道统一乘一个均值 alpha）。
             // alpha 取三通道最大值，SrcOver 混合时目标按最强的子像素让位，避免
             // 背景从笔画缝隙里透出来。顶点颜色已预乘 alpha，末尾不再乘第二次。
+            cov = apply_text_contrast(cov);
             out_rgb = i.color.rgb * cov;
             coverage = max(cov.r, max(cov.g, cov.b));
             per_channel_rgb = true;
         } else if (mode < 5.5) {
             // CBDT/CBLC 彩色位图：RGBA 已解码在图集里，alpha 即覆盖率；
             // RGB 先预乘自身 alpha，末尾不再乘标量 coverage。
-            coverage = texel.a;
-            out_rgb = texel.rgb * texel.a;
+            coverage = apply_text_contrast(texel.a);
+            out_rgb = texel.rgb * coverage;
             per_channel_rgb = true;
+        } else {
+            coverage = apply_text_contrast(coverage);
         }
 
         float a = coverage * i.color.a;
