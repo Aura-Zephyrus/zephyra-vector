@@ -1,4 +1,4 @@
-//! A7：COLR v0 / CPAL 彩色字形（emoji）的回归测试。
+//! A7：COLR v0 / v1 彩色字形（emoji）的回归测试。
 
 use crate::core::Point;
 use crate::render::quad::kind;
@@ -30,10 +30,9 @@ fn colr_layers_are_parsed_from_real_emoji_font() {
         }
     }
     let Some((ch, layers)) = found else {
-        eprintln!("该字体没有 COLR v0 分层（可能是 CBDT 版本），跳过");
-        return;
+        panic!("Segoe UI Emoji 应有 COLR v1 分层，却一个都没解析到");
     };
-    assert_eq!(layers.len() >= 1, true, "{ch} 应有至少一层");
+    assert!(!layers.is_empty(), "{ch} 应有至少一层");
     let colorful = layers
         .iter()
         .any(|l| layers.iter().any(|o| o.color != l.color));
