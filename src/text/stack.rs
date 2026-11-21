@@ -436,6 +436,7 @@ impl<S: GlyphSource> TextStack<S> {
                 px_size: 0.0,
             };
         }
+        self.source.set_variations(&style.variations);
         let px_size = style.effective_size().max(1.0);
         let metrics = self.source.metrics(px_size);
         let line_height = resolved_line_height(style, px_size, metrics);
@@ -613,6 +614,8 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
             display_px > 0.0,
             "ShapedText::px_size 为 0 —— 排版时没填？手搭的 ShapedText 要自己填"
         );
+        // 绘制前同步可变轴：栅格化与 MSDF 轮廓都必须用与排版同一份实例。
+        self.source.set_variations(&style.variations);
         // 按显示字号选 SDF 基准档：大字号用 128/256，保证只缩小不放大。
         let px = sdf_tier(display_px);
         // 注意：图集键用的是每个字形自带的 `font_id`，支持多字体/回退场景。

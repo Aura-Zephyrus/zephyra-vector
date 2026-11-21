@@ -101,6 +101,9 @@ mod ellipsis_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/text/color_tests.rs"]
 mod color_tests;
+#[cfg(test)]
+#[path = "../../tests/unit/text/variation_tests.rs"]
+mod variation_tests;
 
 pub use atlas::{
     AtlasGlyph, AtlasRaster, AtlasStats, EntryInfo, EvictPlan, EvictionPolicy, GlyphAtlas,
@@ -158,6 +161,11 @@ pub trait GlyphSource {
     /// `(SDF_PADDING, SDF_PADDING)` 开始；`width`/`height` 是**墨迹**尺寸。
     /// `None` = 空白字形（空格、零宽字符）—— 它们没有位图，但**有**步进。
     fn rasterize(&mut self, glyph_id: u32, px_size: u32) -> Option<AtlasRaster>;
+
+    /// 应用可变字体轴。默认无操作（不可变字体/替身）。
+    ///
+    /// `TextStack` 在排版与绘制前调用；实现须保证同参数重复调用幂等。
+    fn set_variations(&mut self, _variations: &[([u8; 4], f32)]) {}
 
     /// 彩色字形（COLR v0）的分层；普通字形返回 `None`。
     ///
@@ -366,6 +374,10 @@ pub struct TextStyle {
     ///
     /// 对应 CSS `word-spacing`，与 [`Self::letter_spacing`] 叠加。
     pub word_spacing: f32,
+    /// 可变字体轴设置：`([四字节 tag], 值)`，如 `(*b"wght", 700.0)`。
+    ///
+    /// 对应 Skia `SkFontArguments::VariationPosition`。轴不存在时安全忽略。
+    pub variations: Vec<([u8; 4], f32)>,
     /// 最大行数；超出时截断末行并加省略号（SkParagraph `max_lines`）。
     pub max_lines: Option<usize>,
     /// 截断用的省略号；`None` 用 `"…"`。
@@ -421,6 +433,7 @@ impl Default for TextStyle {
             strut: None,
             letter_spacing: 0.0,
             word_spacing: 0.0,
+            variations: Vec::new(),
             max_lines: None,
             ellipsis: None,
             font_features: Vec::new(),

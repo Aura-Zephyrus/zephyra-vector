@@ -99,14 +99,33 @@
 - [x] vector push 成功（`81fb9f6`）；main 待 push
 - [ ] 可选：Viewstage-Rust `cargo update -p zephyra-vector` 后重编截图设置页，确认无串位复发、新装饰线/省略号/彩色 emoji 正常
 
-## 明确不做（本轮）
+## 补全阶段（用户 2026-11-21 要求「补全」——把上面明确不做的也做掉）
 
-- 可变字体轴 fvar/gvar（需 skrifa 或自写 gvar 插值，破依赖门禁）
-- 文字沿路径 / 旋转缩放（要改 Command::Text + 三后端顶点展开）
-- Hyphenation 词典
-- 系统字体发现 / FontMgr（归宿主）
-- CBDT/CBLC 位图 emoji（需 PNG 解码器）
-- 宿主 `TextStack<AbGlyphSource>` → `TextStack<FontSet>` 切换（用户本轮未列，单独确认）
+### C1 — 宿主 FontSet 接线 + 字体发现
+- [ ] 主仓 `TextEngine` 类型从 `TextStack<AbGlyphSource>` 改 `TextStack<FontSet>`
+- [ ] 字体发现：从宿主已加载的字体字节构建 FontSet（COLR 字体、CJK 字体、emoji 字体），family/weight 元数据
+- [ ] 验证：`cargo test -p zephyra-core`、workspace check
+
+### C2 — CBDT/CBLC 位图 emoji（零新增依赖）
+- [ ] 自写最小 PNG 解码（DEFLATE + PNG filters），解析 CBDT/CBLC 表
+- [ ] 位图层叠进图集（RGBA 4 字节路径已通）；或合成到 COLR 层
+- [ ] 测试
+
+### C3 — 可变字体轴 fvar/gvar
+- [ ] 调研 ttf-parser 的 variation API（是否能在 outline 阶段应用坐标）
+- [ ] 在 ab_glyph 的 outline 提取处应用 gvar delta；`TextStyle` 暴露 axes
+- [ ] 测试
+
+### C4 — Hyphenation（无词典文件的规则回退）
+- [ ] 基于 Unicode 断行点的拉丁音节切分启发式；`TextStyle::hyphens` 开关
+- [ ] 测试
+
+### C5 — 文字沿路径 / 旋转缩放
+- [ ] `GlyphQuad` 携带 4 个角点（或可选旋转），`Vertex` 展开支持
+- [ ] `TextStyle` 暴露路径/旋转；测试
+
+### C6 — Viewstage-Rust 回归
+- [ ] `cargo update -p zephyra-vector`，重编，截图检查设置页
 
 ## 进度日志
 

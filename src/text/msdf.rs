@@ -116,10 +116,15 @@ pub fn outline_segments(
     glyph_id: u16,
     px_per_unit: f32,
     origin: (f32, f32),
+    variations: &[([u8; 4], f32)],
 ) -> Vec<Segment> {
-    let Ok(face) = Face::parse(font_bytes, 0) else {
+    let Ok(mut face) = Face::parse(font_bytes, 0) else {
         return Vec::new();
     };
+    // ttf-parser 的 outline_glyph 在设过坐标后会自动应用 gvar delta。
+    for (tag, value) in variations {
+        let _ = face.set_variation(rustybuzz::ttf_parser::Tag::from_bytes(tag), *value);
+    }
     let mut collector = Collector::default();
     if face
         .outline_glyph(GlyphId(glyph_id), &mut collector)
@@ -421,6 +426,7 @@ mod tests {
             gid as u16,
             px as f32 / upem,
             (raster.offset.x, raster.offset.y),
+            &[],
         );
         assert!(!segs.is_empty(), "真实字形应能提取到轮廓线段");
         let min_x = segs

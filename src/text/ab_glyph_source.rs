@@ -61,7 +61,7 @@ use crate::text::msdf::outline_segments;
 use crate::text::sdf::{SDF_BASE_PX, SDF_PADDING, SDF_SPREAD};
 use crate::text::shape::{bidi_runs, dominant_script, rustybuzz_script, ShapedGlyph, ShapedRun};
 use crate::text::{AtlasRaster, ColorLayer, FontMetrics, GlyphSource, TextStack, TextStyle};
-use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont};
+use ab_glyph::{Font, FontVec, GlyphId, PxScale, ScaleFont, VariableFont};
 use rustybuzz::ttf_parser::Tag;
 
 /// 四字节 OpenType tag 的两种表示（用户 API 用 u32，rustybuzz 用 `[u8; 4]`）。
@@ -84,6 +84,8 @@ pub struct AbGlyphSource {
     font_id: u32,
     /// COLR v0 彩色字形分层表，构造时解析一次（新字形才查询，稳态零成本）。
     color_layers: HashMap<u32, Vec<ColorLayer>>,
+    /// 当前生效的可变字体轴；用来做幂等跳过与回退默认轴。
+    applied_variations: Vec<([u8; 4], f32)>,
 }
 
 impl AbGlyphSource {
@@ -101,12 +103,18 @@ impl AbGlyphSource {
             font,
             font_id,
             color_layers,
+            applied_variations: Vec::new(),
         })
     }
 
     /// 原始字体字节（供回退链查询 cmap 覆盖、重建 rustybuzz face）。
     pub(crate) fn font_bytes(&self) -> &[u8] {
         self.font.as_slice()
+    }
+
+    /// 字体支持的可变轴列表（空表示不可变字体）。
+    pub fn variation_axes(&self) -> Vec<ab_glyph::VariationAxis> {
+        self.font.variations()
     }
 
     /// 字体的 units-per-em（供回退链算 `px / upem` 缩放）。
@@ -169,7 +177,7 @@ impl AbGlyphSource {
         user_features: &[(u32, u32)],
     ) -> ShapedRun {
         let script = dominant_script(run_text);
-        let face = match rustybuzz::Face::from_slice(self.font.as_slice(), 0) {
+        let mut face = match rustybuzz::Face::from_slice(self.font.as_slice(), 0) {
             Some(f) => f,
             None => {
                 // 字体字节已被 `from_bytes` 验证过，理论上不会走到这里；真到了就
@@ -195,6 +203,11 @@ impl AbGlyphSource {
                 };
             }
         };
+
+        // 与 ab_glyph 侧保持同一套可变轴：整形的步进（含 HVAR/VVAR）也随之变化。
+        for (tag, value) in &self.applied_variations {
+            let _ = face.set_variation(Tag::from_bytes(tag), *value);
+        }
 
         // 显式打开常用特性：连字、上下文替代、字距对、mark 定位。
         // 字体里没有的表会被 rustybuzz 安全忽略。用户给的同 tag 项覆盖默认值
@@ -341,6 +354,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
                     font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
                     font_id: u32::MAX,
                     color_layers: HashMap::new(),
+                    applied_variations: Vec::new(),
                 }),
                 format!("字体 {path} 解析失败（{e}），已退回无文本模式"),
             ),
@@ -350,6 +364,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
                 font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
                 font_id: u32::MAX,
                 color_layers: HashMap::new(),
+                applied_variations: Vec::new(),
             }),
             format!("字体 {path} 是空文件，已退回无文本模式"),
         ),
@@ -358,6 +373,7 @@ pub fn from_font_file(path: &str) -> (TextStack<AbGlyphSource>, String) {
                 font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
                 font_id: u32::MAX,
                 color_layers: HashMap::new(),
+                applied_variations: Vec::new(),
             }),
             format!("读不到字体 {path}（{e}），已退回无文本模式"),
         ),
@@ -405,6 +421,7 @@ pub fn from_system_font() -> (TextStack<AbGlyphSource>, String) {
             font: FontVec::try_from_vec(minimal_sfnt()).expect("最小 sfnt 头应可解析"),
             font_id: u32::MAX,
             color_layers: HashMap::new(),
+            applied_variations: Vec::new(),
         }),
         format!(
             "未找到可用系统字体（试过 {} 个路径），已退回无文本模式",
@@ -446,6 +463,20 @@ impl GlyphSource for AbGlyphSource {
         self.font
             .as_scaled(scale)
             .h_advance(GlyphId(glyph_id.min(u16::MAX as u32) as u16))
+    }
+
+    fn set_variations(&mut self, variations: &[([u8; 4], f32)]) {
+        if self.applied_variations.as_slice() == variations {
+            return;
+        }
+        // 先把所有轴回默认值，避免上一次的设置在本次未指定的轴上残留。
+        for axis in self.font.variations() {
+            let _ = self.font.set_variation(&axis.tag, axis.default_value);
+        }
+        for (tag, value) in variations {
+            let _ = self.font.set_variation(tag, *value);
+        }
+        self.applied_variations = variations.to_vec();
     }
 
     fn color_layers(&self, glyph_id: u32) -> Option<&[ColorLayer]> {
@@ -539,6 +570,7 @@ impl GlyphSource for AbGlyphSource {
             id.0,
             px_per_unit,
             (bounds.min.x, bounds.min.y),
+            &self.applied_variations,
         );
         let mask = crate::text::msdf::generate(&coverage, w, h, SDF_PADDING, &segments);
 
