@@ -33,15 +33,30 @@ fn gradient_at(g: &GradientPaint, x: f32, y: f32) -> Color {
             if len2 < 1e-6 { 0.0 } else { ((x - x0) * dx + (y - y0) * dy) / len2 }
         }
         GradientKind::Radial { x0, y0, r0, x1, y1, r1 } => {
-            let d0 = ((x - x0).powi(2) + (y - y0).powi(2)).sqrt();
-            let dc = ((x - x1).powi(2) + (y - y1).powi(2)).sqrt();
-            let d = dc + r0; // 近似同心圆（OpenType 非同心时用 d0 参与）
-            let _ = d0;
-            let span = r1 - r0;
-            if span.abs() < 1e-6 { 0.0 } else { (d - r0) / span }
+            // OpenType 双圆径向渐变：求 |p - c(t)| == r(t) 的最小 t∈[0,1]。
+            let (dcx, dcy) = (x1 - x0, y1 - y0);
+            let (px, py) = (x - x0, y - y0);
+            let dr = r1 - r0;
+            let a = dcx * dcx + dcy * dcy - dr * dr;
+            let b = -2.0 * (px * dcx + py * dcy + r0 * dr);
+            let c = px * px + py * py - r0 * r0;
+            if a.abs() < 1e-6 {
+                if b.abs() < 1e-6 { 0.0 } else { -c / b }
+            } else {
+                let disc = b * b - 4.0 * a * c;
+                if disc < 0.0 {
+                    0.0
+                } else {
+                    let sq = disc.sqrt();
+                    let t0 = (-b - sq) / (2.0 * a);
+                    let t1 = (-b + sq) / (2.0 * a);
+                    if (0.0..=1.0).contains(&t0) { t0 } else { t1 }
+                }
+            }
         }
         GradientKind::Sweep { cx, cy, start, end } => {
-            let a = (y - cy).atan2(x - cx);
+            // OpenType 的扫掠角从 +x 轴顺时针计；atan2 是逆时针，取负号。
+            let a = -(y - cy).atan2(x - cx);
             let span = end - start;
             if span.abs() < 1e-6 { 0.0 } else { (a - start) / span }
         }
