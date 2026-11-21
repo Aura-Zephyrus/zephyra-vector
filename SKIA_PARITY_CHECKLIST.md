@@ -102,30 +102,34 @@
 ## 补全阶段（用户 2026-11-21 要求「补全」——把上面明确不做的也做掉）
 
 ### C1 — 宿主 FontSet 接线 + 字体发现
-- [ ] 主仓 `TextEngine` 类型从 `TextStack<AbGlyphSource>` 改 `TextStack<FontSet>`
-- [ ] 字体发现：从宿主已加载的字体字节构建 FontSet（COLR 字体、CJK 字体、emoji 字体），family/weight 元数据
-- [ ] 验证：`cargo test -p zephyra-core`、workspace check
+- [x] vector：`from_system_font_set()` / `from_font_file_set()` 构造多字体栈（系统候选 + emoji 字体，OS/2 字重类）
+- [x] main：`TextEngine = TextStack<FontSet>`；4 个宿主构造函数改用 set 版本；新增 `Font.Family` / `Font.Weight` 属性并接到 TextStyle
+- [x] `cargo test -p zephyra-core` 全绿、`cargo check --workspace --tests` 通过；commits `8aecbc7`(vector) / `49228bc`(main)
 
 ### C2 — CBDT/CBLC 位图 emoji（零新增依赖）
-- [ ] 自写最小 PNG 解码（DEFLATE + PNG filters），解析 CBDT/CBLC 表
-- [ ] 位图层叠进图集（RGBA 4 字节路径已通）；或合成到 COLR 层
-- [ ] 测试
+- [x] 自写 `src/text/png.rs`：DEFLATE(stored/fixed/dynamic) + 5 种 PNG filter，8-bit RGB/RGBA/灰度
+- [x] `AbGlyphSource::raster_bitmap` 用 ttf-parser 的 `glyph_raster_image` 取 PNG 解码，带留白写进 RGBA 图集；`GlyphMask::ColorRgba`（mode 5）+ HLSL/WGSL + DXBC 重编
+- [x] 测试：合成 PNG 解码 4 色断言通过；本机无 CBDT 字体，Segoe UI Emoji 走 COLR 路径（已验证）
+- [x] commit `7bb7818`
 
 ### C3 — 可变字体轴 fvar/gvar
-- [ ] 调研 ttf-parser 的 variation API（是否能在 outline 阶段应用坐标）
-- [ ] 在 ab_glyph 的 outline 提取处应用 gvar delta；`TextStyle` 暴露 axes
-- [ ] 测试
+- [x] 用现成 `ab_glyph::VariableFont` + ttf-parser `set_variation`（outline_glyph 自动应用 gvar）
+- [x] `TextStyle::variations`，`GlyphSource::set_variations`；ab_glyph face、MSDF 轮廓、rustybuzz face 三处同步
+- [x] 真实 SegUIVar.ttf 验证 wght 400→700 改变步进与位图；commit `b41bce9`
 
 ### C4 — Hyphenation（无词典文件的规则回退）
-- [ ] 基于 Unicode 断行点的拉丁音节切分启发式；`TextStyle::hyphens` 开关
-- [ ] 测试
+- [x] `hyphenation_opportunities`：V|CV / VC|CV 拉丁音节启发式；`TextStyle::hyphens`
+- [x] 断词时行尾补 '-' 字形；2 条测试，commit `d714d19`
 
 ### C5 — 文字沿路径 / 旋转缩放
-- [ ] `GlyphQuad` 携带 4 个角点（或可选旋转），`Vertex` 展开支持
-- [ ] `TextStyle` 暴露路径/旋转；测试
+- [x] `TextStyle::rotation` / `TextPath::Arc`；`GlyphQuad::rotation` 与旋转角点顶点展开（零后端改动）
+- [x] 2 条测试（顶点位置变化、圆弧旋转递变），commit `9fb6146`
 
 ### C6 — Viewstage-Rust 回归
-- [ ] `cargo update -p zephyra-vector`，重编，截图检查设置页
+- [x] `cargo update -p zephyra-vector` → `#8aecbc7d`，release + debug 构建成功
+- [x] 以 `ZEPHYRA_DEBUG_PORT=7878` 启动 debug 版，打开菜单→设置窗口
+- [x] `find_by_text` 命中「设置以临时文件替换方式写入，损坏时自动备份为 .json.corrupt」——中文正常、无串位复发；截图存于临时目录
+- [x] Viewstage-Rust 的 Cargo.lock/Cargo.toml 有大量用户未提交改动，未代为提交
 
 ## 进度日志
 
