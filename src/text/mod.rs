@@ -70,7 +70,9 @@ pub use crate::paint::LcdOrder;
 pub use ab_glyph_source::{from_font_file, from_system_font, AbGlyphSource, FONT_OVERRIDE_ENV};
 pub use fontset::{FontMeta, FontSet};
 pub use sdf::{sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD, SDF_TIERS};
-pub use shape::{bidi_runs, line_break_opportunities, ShapedGlyph, ShapedRun};
+pub use shape::{
+    bidi_runs, hyphenation_opportunities, line_break_opportunities, ShapedGlyph, ShapedRun,
+};
 
 /// `GlyphAtlas` 的**坐标契约**测试。
 ///
@@ -104,6 +106,9 @@ mod color_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/text/variation_tests.rs"]
 mod variation_tests;
+#[cfg(test)]
+#[path = "../../tests/unit/text/hyphenation_tests.rs"]
+mod hyphenation_tests;
 
 pub use atlas::{
     AtlasGlyph, AtlasRaster, AtlasStats, EntryInfo, EvictPlan, EvictionPolicy, GlyphAtlas,
@@ -374,6 +379,8 @@ pub struct TextStyle {
     ///
     /// 对应 CSS `word-spacing`，与 [`Self::letter_spacing`] 叠加。
     pub word_spacing: f32,
+    /// 断行时允许在单词内按音节加连字符（Skia 的 hyphenation，规则回退版）。
+    pub hyphens: bool,
     /// 可变字体轴设置：`([四字节 tag], 值)`，如 `(*b"wght", 700.0)`。
     ///
     /// 对应 Skia `SkFontArguments::VariationPosition`。轴不存在时安全忽略。
@@ -433,6 +440,7 @@ impl Default for TextStyle {
             strut: None,
             letter_spacing: 0.0,
             word_spacing: 0.0,
+            hyphens: false,
             variations: Vec::new(),
             max_lines: None,
             ellipsis: None,

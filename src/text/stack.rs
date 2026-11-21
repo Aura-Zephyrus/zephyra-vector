@@ -22,7 +22,7 @@ use crate::paint::{GlyphMask, GlyphQuad, TextureRef};
 
 use super::{
     atlas::AtlasRaster,
-    line_break_opportunities,
+    hyphenation_opportunities, line_break_opportunities,
     sdf::{from_coverage, sdf_tier, SDF_BASE_PX, SDF_PADDING, SDF_SPREAD},
     FontMetrics, GlyphAtlas, GlyphSource, Line, PlacedGlyph, ShapedText, TextAlign, TextDecorationMode,
     TextDecorationStyle, TextRender, TextStyle,
@@ -304,7 +304,19 @@ impl<S: GlyphSource> TextStack<S> {
                     .sum();
                 cluster_widths.push(width);
             }
-            let breaks = line_break_opportunities(para);
+            let mut breaks = line_break_opportunities(para);
+            // 连字符断点：只在断词处插入 '-'，词末（段落/空格）不变。
+            let hyphen_breaks: Vec<usize> = if style.hyphens {
+                let h = hyphenation_opportunities(para);
+                for &p in &h {
+                    if let Err(i) = breaks.binary_search(&p) {
+                        breaks.insert(i, p);
+                    }
+                }
+                h
+            } else {
+                Vec::new()
+            };
 
             let mut start = 0usize;
             loop {
@@ -387,6 +399,22 @@ impl<S: GlyphSource> TextStack<S> {
                         // 间距计入行宽：否则对齐与断行用的宽度与实际字形跨度不一致。
                         pen += g.advance + spacing;
                     }
+                }
+
+                // 在音节断点处断行 ⇒ 行尾补一个连字符字形。
+                if end < para.len() && hyphen_breaks.binary_search(&end).is_ok() {
+                    let (fid, hid) = self.source.glyph_in('-', style);
+                    let adv = self.source.advance_in(fid, hid, px_size) + style.letter_spacing;
+                    glyphs.push(PlacedGlyph {
+                        glyph_id: hid,
+                        font_id: fid,
+                        offset: Point::new(pen, 0.0),
+                        advance: adv,
+                        color_glyph: false,
+                        embolden: 0.0,
+                    });
+                    break_after.push(false);
+                    pen += adv;
                 }
 
                 let is_last = pi + 1 == paragraph_count && end >= para.len();

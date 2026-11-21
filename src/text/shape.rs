@@ -118,6 +118,37 @@ pub fn line_break_opportunities(text: &str) -> Vec<usize> {
     out
 }
 
+/// 拉丁文字的音节断点（字节偏移），用于 `TextStyle::hyphens`。
+///
+/// 不依赖词典文件（那会引入数据依赖）；用经典的 V|CV / VC|CV 启发式：
+/// - 元音-辅音-元音：在辅音前断（"ta|ble"）；
+/// - 辅音-辅音-元音：在第二个辅音前断（"win|ter"）。
+/// 只在单词内部、且两侧至少留 2 个字符，避免产生 "a-" 之类碎片。
+pub fn hyphenation_opportunities(text: &str) -> Vec<usize> {
+    fn is_vowel(c: char) -> bool {
+        matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+    }
+    let mut out = Vec::new();
+    for word in text.split(|c: char| !c.is_ascii_alphabetic()) {
+        let start = word.as_ptr() as usize - text.as_ptr() as usize;
+        let chars: Vec<char> = word.chars().collect();
+        if chars.len() < 4 {
+            continue;
+        }
+        for i in 2..chars.len() - 1 {
+            let (prev, cur, next) = (chars[i - 1], chars[i], chars[i + 1]);
+            let breakable = (is_vowel(prev) && !is_vowel(cur) && is_vowel(next))
+                || (!is_vowel(prev) && !is_vowel(cur) && is_vowel(next) && prev != cur);
+            if breakable {
+                out.push(start + i);
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// 默认整形：逐字符，不做 GSUB/GPOS。给没有字体引擎的替身与降级路径使用。
 pub fn naive_shape<S: GlyphSource + ?Sized>(
     source: &mut S,
