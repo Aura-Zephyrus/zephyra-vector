@@ -49,6 +49,11 @@ use crate::render::quad::{self, kind, Vertex};
 /// 与 shader 里的 `TEXT_CONTRAST` 一致（Skia `SK_GAMMA_CONTRAST` 默认值）。
 const TEXT_CONTRAST: f32 = 0.5;
 
+/// Skia `pack4xHToMask` 的 12-tap 高斯 FIR（除以 256）。
+const FIR_R: [f32; 12] = [3., 11., 28., 51., 64., 57., 36., 16., 5., 1., 0., 0.];
+const FIR_G: [f32; 12] = [0., 2., 8., 22., 43., 61., 61., 43., 22., 8., 2., 0.];
+const FIR_B: [f32; 12] = [0., 0., 1., 5., 16., 36., 57., 64., 51., 28., 11., 3.];
+
 /// 一张 RGBA8 位图（**线性**颜色，未做 sRGB 编码）。
 ///
 /// 为什么是线性：与着色器输出一致。sRGB 编码只发生在**写文件给人看**的那一侧
@@ -302,23 +307,26 @@ impl CpuCanvas {
                             let [r, g, b] = atlas.map(|at| at.sample_msdf(uv)).unwrap_or([0.0; 3]);
                             smoothstep(0.5 - half - emb, 0.5 + half - emb, median3(r, g, b))
                         } else {
-                            // LCD：沿 x 取三次 MSDF 样本。CPU 参考路径没有逐通道
-                            // alpha，取三通道均值作标量覆盖率（与 shader 输出的
-                            // 标量 alpha 同一近似）。
+                            // LCD：与 GPU 同一套 Skia 12-tap FIR。CPU 参考路径
+                            // 没有逐通道 alpha，三通道覆盖率按感知权重折成标量。
                             let duv = (chunk[2].uv[0] - a.uv[0]) / w.max(1.0);
                             let dir = if mode < 3.5 { 1.0 } else { -1.0 };
-                            let mut total = 0.0f32;
-                            for shift in [-1.0f32 / 3.0, 0.0, 1.0 / 3.0] {
-                                let u = [uv[0] + shift * duv * dir, uv[1]];
+                            let (mut cr, mut cg, mut cb) = (0.0f32, 0.0f32, 0.0f32);
+                            for k in 0..12 {
+                                let off = (k as f32 - 5.5) * 0.25;
+                                let u = [uv[0] + off * duv * dir, uv[1]];
                                 let [r, g, b] =
                                     atlas.map(|at| at.sample_msdf(u)).unwrap_or([0.0; 3]);
-                                total += smoothstep(
+                                let c = smoothstep(
                                     0.5 - half - emb,
                                     0.5 + half - emb,
                                     median3(r, g, b),
                                 );
+                                cr += FIR_R[k] / 256.0 * c;
+                                cg += FIR_G[k] / 256.0 * c;
+                                cb += FIR_B[k] / 256.0 * c;
                             }
-                            total / 3.0
+                            cr.min(1.0) * 0.30 + cg.min(1.0) * 0.59 + cb.min(1.0) * 0.11
                         }
                     }
                     // 图像：**只画形状，不采样纹理。**

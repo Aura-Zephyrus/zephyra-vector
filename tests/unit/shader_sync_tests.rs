@@ -116,5 +116,7 @@ fn wgsl_parts_concatenate_to_a_valid_module_shape() {
     assert!(src.contains("0.5 - aa - emb"));
     assert!(src.contains("fwidth(s_msdf)"));
     // LCD 三次采样：子像素步长 = 每像素 uv 步长 / 3。
-    assert!(src.contains("duv_dx * dir / 3.0"));
+    // LCD 用 Skia 12-tap FIR，不再是 3 点等权采样。
+    assert!(src.contains("FIR_R") && src.contains("FIR_G") && src.contains("FIR_B"));
+    assert!(src.contains("gamma_correct_coverage"));
 }

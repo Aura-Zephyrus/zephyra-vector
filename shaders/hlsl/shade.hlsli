@@ -10,6 +10,36 @@ float3 apply_text_contrast(float3 a) {
     return a + (1.0f - a) * TEXT_CONTRAST * a;
 }
 
+// sRGB 传递函数（Skia `SkMaskGamma` 用的分段曲线）。
+float srgb_to_linear(float c) {
+    return c <= 0.04045f ? c / 12.92f : pow(max((c + 0.055f) / 1.055f, 1e-5f), 2.4f);
+}
+float linear_to_srgb(float c) {
+    return c <= 0.0031308f ? c * 12.92f : 1.055f * pow(max(c, 1e-5f), 1.0f / 2.4f) - 0.055f;
+}
+
+// 覆盖率 gamma 预扭曲：Skia `SkTMaskGamma_build_correcting_lut` 的逐像素版本。
+// 假设背景是文字色的感知反色（Skia 的 CanonicalColor 近似），算出「线性光混合
+// 后再编码」的目标值，再反解出让当前 gamma 空间 blend 得到同一结果的 alpha。
+// 这样白色文字不会过粗、黑色文字不会过细，且任意文字颜色都有一致观感。
+float gamma_correct_coverage(float a, float src_encoded) {
+    float dst = 1.0f - src_encoded;
+    float denom = 2.0f * src_encoded - 1.0f;
+    if (abs(denom) < 0.05f) {
+        return a; // 中灰文字：线性与 gamma 空间差异很小，避免除零。
+    }
+    float lin_s = srgb_to_linear(src_encoded);
+    float lin_d = srgb_to_linear(dst);
+    float corrected = linear_to_srgb(lin_s * a + lin_d * (1.0f - a));
+    return clamp((corrected - dst) / denom, 0.0f, 1.0f);
+}
+
+// Skia `pack4xHToMask` 的 12-tap 高斯 FIR：R/G/B 三个子像素中心分别在
+// 1/6、1/2、5/6 px。系数和 = 272/256 = 1.0625，模拟轻微墨迹扩散。
+static const float FIR_R[12] = { 3, 11, 28, 51, 64, 57, 36, 16, 5, 1, 0, 0 };
+static const float FIR_G[12] = { 0, 2, 8, 22, 43, 61, 61, 43, 22, 8, 2, 0 };
+static const float FIR_B[12] = { 0, 0, 1, 5, 16, 36, 57, 64, 51, 28, 11, 3 };
+
 /// 算出这一片元的**预乘**源色（不含任何混合）。
 ///
 /// 抽出来是因为可分离 / 非可分离混合要与 `dst` 合成，而「算出源色」这部分
@@ -179,6 +209,9 @@ float4 ShadeSource(VSOut i) {
         float4 texel = g_tex.Sample(g_smp, i.uv);
         float coverage = 0.0;
         float3 out_rgb = i.color.rgb;
+        // 顶点色是预乘的；gamma 校正需要文字本色（非预乘）。
+        float3 src_rgb = i.color.rgb / max(i.color.a, 1e-4f);
+        float src_lum = dot(src_rgb, float3(0.2126f, 0.7152f, 0.0722f));
         // LCD 分支把逐通道覆盖率直接乘进 RGB，末尾不能再乘一次标量 coverage。
         bool per_channel_rgb = false;
 
@@ -199,22 +232,27 @@ float4 ShadeSource(VSOut i) {
         } else if (mode < 2.5) {
             coverage = smoothstep(0.5 - aa - emb, 0.5 + aa - emb, s_msdf);
         } else if (mode < 4.5) {
-            // LCD：沿 x 取三次 MSDF 样本。BGR 把偏移方向反过来。
+            // LCD：Skia 的 12-tap 高斯 FIR。BGR 把偏移方向反过来。
+            // 直接在 MSDF 上按子像素位置取覆盖率，再用 R/G/B 三组权重卷积，
+            // 比早先 3 点等权采样更接近 ClearType：彩边更少、细竖边更稳。
             float dir = (mode < 3.5) ? 1.0 : -1.0;
-            float subpix = duv_dx * dir / 3.0;
             float3 cov = 0;
             [unroll]
-            for (int k = 0; k < 3; ++k) {
-                float off = (float(k) - 1.0) * subpix;
-                float3 s3 = g_tex.Sample(g_smp, i.uv + float2(off, 0.0)).rgb;
+            for (int k = 0; k < 12; ++k) {
+                float off = (float(k) - 5.5f) * 0.25f;
+                float3 s3 = g_tex.Sample(g_smp, i.uv + float2(duv_dx * dir * off, 0.0)).rgb;
                 float sd = max(min(s3.r, s3.g), min(max(s3.r, s3.g), s3.b));
-                cov[k] = smoothstep(0.5 - aa - emb, 0.5 + aa - emb, sd);
+                float c = smoothstep(0.5 - aa - emb, 0.5 + aa - emb, sd);
+                cov.r += FIR_R[k] * (1.0f / 256.0f) * c;
+                cov.g += FIR_G[k] * (1.0f / 256.0f) * c;
+                cov.b += FIR_B[k] * (1.0f / 256.0f) * c;
             }
-            // 逐通道覆盖率进 RGB：三个子像素各自用自己的覆盖率着色，得到真正的
-            // ClearType/RGB 子像素效果（而不是把所有通道统一乘一个均值 alpha）。
-            // alpha 取三通道最大值，SrcOver 混合时目标按最强的子像素让位，避免
-            // 背景从笔画缝隙里透出来。顶点颜色已预乘 alpha，末尾不再乘第二次。
+            cov = min(cov, 1.0f);
             cov = apply_text_contrast(cov);
+            // 每个子像素按自身通道的文字色做 gamma 预扭曲。
+            cov.r = gamma_correct_coverage(cov.r, src_rgb.r);
+            cov.g = gamma_correct_coverage(cov.g, src_rgb.g);
+            cov.b = gamma_correct_coverage(cov.b, src_rgb.b);
             out_rgb = i.color.rgb * cov;
             coverage = max(cov.r, max(cov.g, cov.b));
             per_channel_rgb = true;
@@ -224,8 +262,13 @@ float4 ShadeSource(VSOut i) {
             coverage = apply_text_contrast(texel.a);
             out_rgb = texel.rgb * coverage;
             per_channel_rgb = true;
-        } else {
+        }
+
+        // 灰度/单通道/多通道 SDF：对比度预扭曲 + 按文字亮度做 gamma 覆盖校正。
+        // LCD 与彩色位图已在各自分支内处理（且它们各自的颜色不同，不能用文字色统一校正）。
+        if (!per_channel_rgb) {
             coverage = apply_text_contrast(coverage);
+            coverage = gamma_correct_coverage(coverage, src_lum);
         }
 
         float a = coverage * i.color.a;

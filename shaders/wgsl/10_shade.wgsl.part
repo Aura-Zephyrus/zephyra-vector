@@ -7,6 +7,26 @@ fn apply_text_contrast3(a: vec3f) -> vec3f {
     return a + (1.0 - a) * TEXT_CONTRAST * a;
 }
 
+fn srgb_to_linear(c: f32) -> f32 {
+    return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);
+}
+fn linear_to_srgb(c: f32) -> f32 {
+    return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, c * 12.92, c <= 0.0031308);
+}
+fn gamma_correct_coverage(a: f32, src: f32) -> f32 {
+    let dst = 1.0 - src;
+    let denom = 2.0 * src - 1.0;
+    if (abs(denom) < 0.05) { return a; }
+    let lin_s = srgb_to_linear(src);
+    let lin_d = srgb_to_linear(dst);
+    let out = linear_to_srgb(lin_s * a + lin_d * (1.0 - a));
+    return clamp((out - dst) / denom, 0.0, 1.0);
+}
+
+const FIR_R = array<f32, 12>(3.0, 11.0, 28.0, 51.0, 64.0, 57.0, 36.0, 16.0, 5.0, 1.0, 0.0, 0.0);
+const FIR_G = array<f32, 12>(0.0, 2.0, 8.0, 22.0, 43.0, 61.0, 61.0, 43.0, 22.0, 8.0, 2.0, 0.0);
+const FIR_B = array<f32, 12>(0.0, 0.0, 1.0, 5.0, 16.0, 36.0, 57.0, 64.0, 51.0, 28.0, 11.0, 3.0);
+
 /// 算出这一片元的**预乘**源色（不含任何混合）。
 ///
 /// 抽出来是因为「算出源色」这部分与混合模式**完全无关**，共用一份才不会出现
@@ -43,6 +63,8 @@ fn shade_source(i: VsOut) -> vec4f {
         let texel = textureSample(g_tex, g_smp, i.uv);
         var coverage = 0.0;
         var out_rgb = i.color.rgb;
+        let src_rgb = i.color.rgb / max(i.color.a, 0.0001);
+        let src_lum = dot(src_rgb, vec3f(0.2126, 0.7152, 0.0722));
         // LCD 分支把逐通道覆盖率直接乘进 RGB，末尾不能再乘一次标量 coverage。
         var per_channel_rgb = false;
 
@@ -59,19 +81,21 @@ fn shade_source(i: VsOut) -> vec4f {
         } else if (mode < 2.5) {
             coverage = smoothstep(0.5 - aa - emb, 0.5 + aa - emb, s_msdf);
         } else if (mode < 4.5) {
-            // LCD：沿 x 取三次 MSDF 样本。BGR 把偏移方向反过来。
+            // LCD：Skia 12-tap 高斯 FIR（R/G/B 中心在 1/6、1/2、5/6 px）。
             let dir = select(-1.0, 1.0, mode < 3.5);
-            let subpix = duv_dx * dir / 3.0;
             var cov = vec3f(0.0);
-            for (var k = 0; k < 3; k = k + 1) {
-                let off = (f32(k) - 1.0) * subpix;
-                let s3 = textureSample(g_tex, g_smp, i.uv + vec2f(off, 0.0)).rgb;
+            for (var k = 0; k < 12; k = k + 1) {
+                let off = (f32(k) - 5.5) * 0.25;
+                let s3 = textureSample(g_tex, g_smp, i.uv + vec2f(duv_dx * dir * off, 0.0)).rgb;
                 let sd = max(min(s3.r, s3.g), min(max(s3.r, s3.g), s3.b));
-                cov[k] = smoothstep(0.5 - aa - emb, 0.5 + aa - emb, sd);
+                let c = smoothstep(0.5 - aa - emb, 0.5 + aa - emb, sd);
+                cov = cov + vec3f(FIR_R[k], FIR_G[k], FIR_B[k]) * (c / 256.0);
             }
-            // 逐通道覆盖率进 RGB：三个子像素各自用自己的覆盖率着色。
-            // alpha 取三通道最大值，SrcOver 混合时目标按最强的子像素让位。
+            cov = min(cov, vec3f(1.0));
             cov = apply_text_contrast3(cov);
+            cov = vec3f(gamma_correct_coverage(cov.r, src_rgb.r),
+                        gamma_correct_coverage(cov.g, src_rgb.g),
+                        gamma_correct_coverage(cov.b, src_rgb.b));
             out_rgb = i.color.rgb * cov;
             coverage = max(cov.r, max(cov.g, cov.b));
             per_channel_rgb = true;
@@ -80,8 +104,11 @@ fn shade_source(i: VsOut) -> vec4f {
             coverage = apply_text_contrast(texel.a);
             out_rgb = texel.rgb * coverage;
             per_channel_rgb = true;
-        } else {
+        }
+
+        if (!per_channel_rgb) {
             coverage = apply_text_contrast(coverage);
+            coverage = gamma_correct_coverage(coverage, src_lum);
         }
 
         let a = coverage * i.color.a;
