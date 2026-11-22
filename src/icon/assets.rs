@@ -24,6 +24,10 @@ pub const CAMERA: &str = include_str!("assets/icons/camera.svg");
 pub const CALENDAR: &str = include_str!("assets/icons/calendar.svg");
 /// 向下 V 形（下拉 / 展开指示）。
 pub const CHEVRON_DOWN: &str = include_str!("assets/icons/chevron-down.svg");
+/// 向左 V 形（上一页 / 返回指示）。
+pub const CHEVRON_LEFT: &str = include_str!("assets/icons/chevron-left.svg");
+/// 向右 V 形（下一页 / 前进指示）。
+pub const CHEVRON_RIGHT: &str = include_str!("assets/icons/chevron-right.svg");
 /// 向上 V 形（收起 / 数值加）。
 pub const CHEVRON_UP: &str = include_str!("assets/icons/chevron-up.svg");
 /// 时钟。
@@ -81,6 +85,8 @@ pub const REGISTRY: &[(&str, IconSource)] = &[
     ("calendar", IconSource::Svg(CALENDAR)),
     ("check", IconSource::Svg(CHECK)),
     ("chevron-down", IconSource::Svg(CHEVRON_DOWN)),
+    ("chevron-left", IconSource::Svg(CHEVRON_LEFT)),
+    ("chevron-right", IconSource::Svg(CHEVRON_RIGHT)),
     ("chevron-up", IconSource::Svg(CHEVRON_UP)),
     ("clock", IconSource::Svg(CLOCK)),
     ("close", IconSource::Svg(DISMISS)),

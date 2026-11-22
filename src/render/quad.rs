@@ -755,6 +755,18 @@ pub struct RenderReport {
     pub index_upload_skipped: bool,
     /// 图像命令分成的批次数（每批一次 draw call，因绑定不同纹理无法合并）。
     pub image_batches: usize,
+    /// 本帧实际上传到 GPU 的那份图集位图的版本号（`GlyphAtlas::revision`）。
+    ///
+    /// 字形四边形的 uv 是绘制趟按当时的图集布局算出来的，而图集位图由宿主在另一处
+    /// 上传；两者之间必须验明是**同一版**。把版本号记在两条路径共用的报告上，
+    /// 宿主就能断言「绘制用的 uv 版本 == 上传的像素版本」：一旦不等，先算的那些
+    /// 文字就会落到别人的字形槽位上（淘汰重排改写了所有幸存者的 uv，而旧 uv 仍被
+    /// 缓存着）—— 症状是前一批字错乱、后一批正常，且不报任何错。
+    ///
+    /// 默认 0 = 该后端没有上传图集（离屏 harness 等）。`absorb` 取**后一段**的值：
+    /// 分段回放里最后一段才是真正提交的那份图集状态，取 0 / 取 max 都会把真实版本
+    /// 抹成 0 或误留一个已经被替换掉的旧值。
+    pub atlas_revision: u64,
     /// 因纹理未注册而跳过的图像命令数。
     ///
     /// 恒大于 0 基本都是 bug：注册名与 `props::IMAGE_TEXTURE` 的值拼错。
@@ -853,6 +865,7 @@ impl RenderReport {
         self.vertex_bytes = self.vertex_bytes.max(other.vertex_bytes);
         self.image_batches += other.image_batches;
         self.missing_textures += other.missing_textures;
+        self.atlas_revision = other.atlas_revision;
         self.path_triangles += other.path_triangles;
         self.unhandled_custom += other.unhandled_custom;
         self.custom_passes += other.custom_passes;

@@ -228,10 +228,18 @@ impl GlyphSource for FontSet {
     }
 
     fn advance(&mut self, glyph_id: u32, px_size: f32) -> f32 {
-        self.fonts
-            .first_mut()
-            .map(|s| s.source.advance(glyph_id, px_size))
-            .unwrap_or(0.0)
+        // ⚠ `GlyphSource::advance` 的签名里**没有 font_id**（trait 契约），所以它
+        // 只能在「调用方已确保 glyph_id 来自默认字体」时才有意义。多字体回退链里
+        // 真正的入口是 `advance_in(font_id, glyph_id, px)`：`TextStack::advance` 与
+        // `FontSet::shape` 都走它。这里保留默认字体兜底，并显式委托给 `advance_in`，
+        // 免得两处各写一份度量查询、日后漂移。
+        //
+        // 旧的 `first_mut().advance(glyph_id, px)` 会把 font N 的字形 id 交给 font 0
+        // 解释，得到完全无关的步进宽度（H3）。
+        let Some(font_id) = self.fonts.first().map(|s| s.source.font_id()) else {
+            return 0.0;
+        };
+        self.advance_in(font_id, glyph_id, px_size)
     }
 
     fn metrics(&self, px_size: f32) -> Option<FontMetrics> {
@@ -471,6 +479,46 @@ mod tests {
         assert!(
             ids.contains(&10) && ids.contains(&11),
             "混排应产出两个 font_id，实得 {ids:?}"
+        );
+    }
+
+    /// H3 回归：CJK 字形来自第二份字体，光标宽度必须取**那份字体**的 advance。
+    ///
+    /// 旧的 `TextStack::advance` 走 `source.glyph_id(ch)` + `source.advance(id, px)`；
+    /// 对 `FontSet` 而言后者问的是 font 0，于是用 Segoe UI 的度量去解释微软雅黑的
+    /// glyph id —— 宽度随机，输入框 prefix / 光标位置错位。
+    #[test]
+    fn cjk_cursor_width_uses_the_font_that_owns_the_glyph() {
+        let latin = font(r"C:\Windows\Fonts\segoeui.ttf");
+        let cjk = font(r"C:\Windows\Fonts\msyh.ttc");
+        if std::fs::metadata(r"C:\Windows\Fonts\msyh.ttc").is_err() {
+            return;
+        }
+        let mut set = FontSet::new();
+        set.add(10, &latin, FontMeta::new("Segoe UI", 400)).unwrap();
+        set.add(11, &cjk, FontMeta::new("Microsoft YaHei", 400))
+            .unwrap();
+
+        let px = 32.0f32;
+        let style = TextStyle {
+            size: px,
+            ..Default::default()
+        };
+        let (cjk_font, cjk_gid) = set.glyph_in('中', &style);
+        assert_eq!(cjk_font, 11, "前置条件：'中' 必须落到第二份字体");
+        let expected = set.advance_in(cjk_font, cjk_gid, px);
+        let wrong_font_0 = set.advance(cjk_gid, px);
+        // 判别力自检：若两字体恰好给出相同宽度，这条测试就区分不了新旧实现。
+        assert!(
+            (expected - wrong_font_0).abs() > 0.01,
+            "两份字体对 '中' 的 glyph id 给出的步进恰好相同（{expected}）—— 本测试失去判别力"
+        );
+
+        let mut stack = TextStack::new(set);
+        let got = stack.advance('中', &style);
+        assert!(
+            (got - expected).abs() < 0.01,
+            "CJK 光标宽度必须取字形所属字体的 advance：期望 {expected}，实得 {got}（font 0 会给 {wrong_font_0}）"
         );
     }
 

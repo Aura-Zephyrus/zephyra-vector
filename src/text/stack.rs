@@ -601,10 +601,22 @@ impl<S: GlyphSource> super::TextEngine for TextStack<S> {
         if self.disabled {
             return 0.0;
         }
-        let id = self.source.glyph_id(ch);
-        self.source.advance(id, style.effective_size().max(1.0))
+        // ★ H3：字形 id 是**字体局部**的，跨字体无意义。回退链（FontSet）里 '中'
+        // 的 glyph id 来自 font N，而旧的 `self.source.advance(id, px)` 在 FontSet
+        // 的实现里被解释成"问第一份字体" ⇒ 用 font 0 的度量查 font N 的字形 id，
+        // 得到无关宽度，光标/前缀宽度错位（画廊的输入框 prefix 就走这里）。
+        //
+        // Chromium 的不变量：`shape_result_run.h` 把 FontData 存在 GlyphData 旁边；
+        // 这里等价地先用 `glyph_in` 拿到字形**自己的** font_id，再走 `advance_in`。
+        let px = style.effective_size().max(1.0);
+        let (font_id, glyph_id) = self.source.glyph_in(ch, style);
+        self.source.advance_in(font_id, glyph_id, px)
             + style.letter_spacing
-            + if ch.is_whitespace() { style.word_spacing } else { 0.0 }
+            + if ch.is_whitespace() {
+                style.word_spacing
+            } else {
+                0.0
+            }
     }
 
     fn line_height(&mut self, style: &TextStyle) -> f32 {
@@ -729,6 +741,9 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                         // 整段放弃 —— 部分文本可见远好于整段消失。
                         return;
                     };
+                    // 空槽是**合法**的：空格等字形有步进但没有位图（`rasterize` 返回
+                    // `None`），这里必须跳过，不能因为"槽位非空"的断言把它炸掉。
+                    // 真正要防的是"非空槽位的 uv 越界"，断言在下面 uv 构造后。
                     if entry.size.width <= 0.0 || entry.size.height <= 0.0 {
                         return;
                     }
@@ -741,6 +756,19 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                         (entry.uv.y - pad) * inv,
                         (entry.size.width + 2.0 * pad) * inv,
                         (entry.size.height + 2.0 * pad) * inv,
+                    );
+                    // FIX 5：淘汰重排后幸存者的 uv 全被重写；越界意味着像素与 uv
+                    // 已经不同版（H1）。带上 font/glyph id，日志能直接定位是哪个字。
+                    debug_assert!(
+                        uv.x >= 0.0
+                            && uv.y >= 0.0
+                            && uv.x + uv.width <= 1.0
+                            && uv.y + uv.height <= 1.0,
+                        "字形 (font {}, glyph {}) 的 uv {:?} 越过图集边界 —— \
+                         图集重排后像素与 uv 版本不一致",
+                        g.font_id,
+                        gid,
+                        uv
                     );
                     // `w` 是 smoothstep 在 SDF 值域上的过渡半宽：
                     // d_screen = (s - 0.5) · 2·spread·scale，令 d_screen = ±AA_BAND 即得。
