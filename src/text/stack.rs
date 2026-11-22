@@ -759,11 +759,14 @@ impl<S: GlyphSource> TextRender for TextStack<S> {
                     );
                     // FIX 5：淘汰重排后幸存者的 uv 全被重写；越界意味着像素与 uv
                     // 已经不同版（H1）。带上 font/glyph id，日志能直接定位是哪个字。
+                    // 容差 1e-4：uv 由像素坐标除以边长得到（如 6/7 + 1/7 在 f32 里是
+                    // 1.000000036），严格的 <= 1.0 会误报。与 paint.rs 的同类断言一致。
+                    const UV_EPS: f32 = 1e-4;
                     debug_assert!(
-                        uv.x >= 0.0
-                            && uv.y >= 0.0
-                            && uv.x + uv.width <= 1.0
-                            && uv.y + uv.height <= 1.0,
+                        uv.x >= -UV_EPS
+                            && uv.y >= -UV_EPS
+                            && uv.x + uv.width <= 1.0 + UV_EPS
+                            && uv.y + uv.height <= 1.0 + UV_EPS,
                         "字形 (font {}, glyph {}) 的 uv {:?} 越过图集边界 —— \
                          图集重排后像素与 uv 版本不一致",
                         g.font_id,
