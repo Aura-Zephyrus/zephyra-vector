@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test -p zephyra-vector
+
+  mutants:
+    name: mutation testing (zephyra-vector)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@cargo-mutants
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # 退出码 2 表示有存活的可行变异体。没有分数阈值：每个存活变异体
+      # 要么被测试杀掉，要么在 .cargo/mutants.toml 里显式 approve（等价变异）。
+      # 与主仓 ZephyraCore 的 mutation job 纪律一致。
+      - name: Mutation testing
+        run: cargo mutants --in-place --jobs 4
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report
+          path: mutants.out
+          if-no-files-found: ignore

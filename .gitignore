@@ -6,6 +6,9 @@
 # 换目录（`CARGO_TARGET_DIR=target2`）就能一边跑旧实例一边编新的。
 /target2
 
+# cargo-mutants 的变异体报告（每次跑重新生成，是产物不是素材）
+/mutants.out
+
 # `gallery --dump-cpu` 的输出（1.9 MB 的 BMP），每次跑都重新生成。
 # 它是**产物**不是素材。
 *.bmp

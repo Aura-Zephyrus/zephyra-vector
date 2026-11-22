@@ -64,3 +64,21 @@ mod nv12_tests;
 #[cfg(test)]
 #[path = "../tests/unit/shader_sync_tests.rs"]
 mod shader_sync_tests;
+#[cfg(test)]
+#[path = "../tests/unit/core_color_over_tests.rs"]
+mod core_color_over_tests;
+#[cfg(test)]
+#[path = "../tests/unit/core_rect_tests.rs"]
+mod core_rect_tests;
+#[cfg(test)]
+#[path = "../tests/unit/core_debug_tests.rs"]
+mod core_debug_tests;
+#[cfg(test)]
+#[path = "../tests/unit/paint_bounds_tests.rs"]
+mod paint_bounds_tests;
+#[cfg(test)]
+#[path = "../tests/unit/filter_decoration_outset_tests.rs"]
+mod filter_decoration_outset_tests;
+#[cfg(test)]
+#[path = "../tests/unit/lcd_range_tests.rs"]
+mod lcd_range_tests;

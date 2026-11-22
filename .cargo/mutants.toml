@@ -1,0 +1,34 @@
+# cargo-mutants 配置：只变异 zephyra-vector 自身逻辑源码。
+#
+# 本仓是独立 workspace（且是唯一 package），运行：
+#   cargo mutants --in-place --jobs 4
+# `--in-place` 只能由命令行给出（见 cargo-mutants options.rs），故不写在这里。
+#
+# 为什么要有这份配置：主仓 ZephyraCore 的 .cargo/mutants.toml 显式排除了
+# core.rs / decoration.rs / filter.rs / icon/mod.rs / text/mod.rs 这 5 个
+# re-export 空壳 —— 因为算法已经搬进本库。于是本库此前**零变异覆盖**。
+# 这次把变异门禁补在算法真正所在的仓库里。
+
+# 只变自有逻辑源码；lib.rs 是纯 re-export + #[cfg(test)] #[path] 声明，
+# 没有可变异的业务逻辑，排除掉省时间。
+examine_globs = ["src/**/*.rs"]
+
+exclude_globs = [
+  "src/lib.rs",
+]
+
+# 单包 workspace：测试就是本包自己的测试（tests/unit/** 由 #[path] 挂进 src）。
+test_package = ["zephyra-vector"]
+
+# 输出目录（相对 workspace root）。
+output = "mutants.out"
+
+# 基线测试含系统字体扫描 + fxc 重编，约 27s；给宽松倍数避免偶发超时误杀。
+timeout_multiplier = 4.0
+build_timeout_multiplier = 4.0
+
+# 复用 target 缓存以加快每个变异体的构建。
+copy_target = true
+
+# 保留默认 skip_calls（Vec::with_capacity 这类无业务语义的调用）。
+skip_calls_defaults = true

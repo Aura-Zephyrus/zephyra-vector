@@ -632,6 +632,23 @@ impl DisplayList {
     }
 }
 
+/// `DisplayList` 的 `[range]` 里是否含 LCD 亚像素字形。
+///
+/// 三个 GPU 后端（D3D11 / D3D12 / Vulkan）都需要它：LCD 字形在片元着色器里采样
+/// `g_dst` 的目标 alpha，按 Skia 规则选覆盖率的 min 还是 max。若这一趟没绑真实
+/// 目标副本，`g_dst` 读到的是零或图集占位像素 ⇒ 永远退化成 max（彩边）。
+/// 这是**权威实现**：所有 GPU 后端都通过 `zephyra-fx` 的转发调用它，判据只在本库
+/// （类型的所属方）维护一份，避免各后端各抄一份导致漂移。
+pub fn range_has_lcd_text(list: &DisplayList, range: &std::ops::Range<usize>) -> bool {
+    list.iter().skip(range.start).take(range.len()).any(|item| {
+        matches!(
+            &item.command,
+            Command::Text { glyphs, .. }
+                if glyphs.iter().any(|g| matches!(g.mask, GlyphMask::LcdMsdf { .. }))
+        )
+    })
+}
+
 /// 一条命令的离屏需求：宿主据此分配 RT 并把内容画进去。
 #[derive(Debug, Clone, PartialEq)]
 pub struct OffscreenRequirement {
